@@ -1,0 +1,4 @@
+SYNTHETIC TEST DATA — NOT A REAL PATIENT RECORD
+
+The patient drank one glass of water with lunch and reported feeling comfortable.
+No medication changes were requested or authorized.

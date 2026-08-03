@@ -1,0 +1,230 @@
+name: salus
+
+x-app: &app
+  restart: unless-stopped
+  env_file: ${SALUS_ENV_FILE:-.env.production}
+  init: true
+  security_opt:
+    - no-new-privileges:true
+
+x-database-environment: &database-environment
+  DATABASE_ADMIN_URL: postgresql://${POSTGRES_USER:-salus_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-salus}
+  DATABASE_URL: postgresql://salus_app:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-salus}
+  REDIS_URL: redis://redis:6379
+  S3_ENDPOINT: http://minio:9000
+  CLAMAV_HOST: clamav
+  PRIVACY_GATEWAY_URL: http://privacy-gateway:8080
+  WEB_ORIGIN: https://${SALUS_DOMAIN}
+  COOKIE_SECURE: "true"
+  DEMO_LOGIN_ENABLED: "false"
+
+services:
+  pattern-provider-service:
+    image: public.ecr.aws/protegrity-ai-developer-edition/pattern-provider:2.0.0.320.59776828
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+
+  context-provider-service:
+    image: public.ecr.aws/protegrity-ai-developer-edition/context-provider:2.0.0.242.5041932c
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+
+  classification-service:
+    image: public.ecr.aws/protegrity-ai-developer-edition/classification-service:2.0.0.374.8047721c
+    restart: unless-stopped
+    environment:
+      PROVIDERS: '[{"name":"Pattern","address":"http://pattern-provider-service:8051"},{"name":"Context","address":"http://context-provider-service:8052"}]'
+    depends_on: [pattern-provider-service, context-provider-service]
+    security_opt: [no-new-privileges:true]
+
+  semantic-guardrail-service:
+    image: public.ecr.aws/protegrity-ai-developer-edition/semantic-guardrail:1.1.1-36-1b3de114
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: WARNING
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    depends_on: [classification-service]
+    security_opt: [no-new-privileges:true]
+
+  privacy-gateway:
+    <<: *app
+    build:
+      context: .
+      dockerfile: apps/privacy-gateway/Dockerfile
+    environment:
+      SALUS_PRIVACY_MODE: protegrity
+      PROTEGRITY_DISCOVERY_URL: http://classification-service:8050/pty/data-discovery/v2/classify/text
+      PROTEGRITY_GUARDRAIL_URL: http://semantic-guardrail-service:8001/pty/semantic-guardrail/v1.1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 30s
+    depends_on: [classification-service, semantic-guardrail-service]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      SALUS_DOMAIN: ${SALUS_DOMAIN:?Set SALUS_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: { condition: service_healthy }
+      web: { condition: service_healthy }
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    <<: *app
+    build:
+      context: .
+      args: { APP: api }
+    command: sh -c "npm run schema:apply -w @salus/api && npm run start -w @salus/api"
+    environment:
+      <<: *database-environment
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
+      clamav: { condition: service_healthy }
+      privacy-gateway: { condition: service_healthy }
+
+  web:
+    <<: *app
+    build:
+      context: .
+      args:
+        APP: web
+        NEXT_PUBLIC_API_URL: https://${SALUS_DOMAIN}
+        NEXT_PUBLIC_SITE_URL: https://${SALUS_DOMAIN}
+    command: npm run start -w @salus/web
+    environment:
+      NEXT_PUBLIC_API_URL: https://${SALUS_DOMAIN}
+      NEXT_PUBLIC_SITE_URL: https://${SALUS_DOMAIN}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      api: { condition: service_healthy }
+
+  worker:
+    <<: *app
+    build:
+      context: .
+      args: { APP: worker }
+    command: npm run start -w @salus/worker
+    environment:
+      <<: *database-environment
+    depends_on:
+      api: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
+      clamav: { condition: service_healthy }
+      privacy-gateway: { condition: service_healthy }
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-salus}
+      POSTGRES_USER: ${POSTGRES_USER:-salus_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-salus_admin} -d ${POSTGRES_DB:-salus}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    security_opt:
+      - no-new-privileges:true
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env.production}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env.production}
+    volumes:
+      - minio_data:/data
+    security_opt:
+      - no-new-privileges:true
+
+  create-bucket:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      - minio
+    entrypoint: >-
+      /bin/sh -c "until mc alias set local http://minio:9000 $$S3_ACCESS_KEY $$S3_SECRET_KEY; do sleep 2; done;
+      mc mb --ignore-existing local/$$S3_BUCKET; mc anonymous set none local/$$S3_BUCKET"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env.production}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env.production}
+      S3_BUCKET: ${S3_BUCKET:-salus-private}
+    security_opt:
+      - no-new-privileges:true
+
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    security_opt:
+      - no-new-privileges:true
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      api: { condition: service_healthy }
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+  minio_data:
+  clamav_data:
+  prometheus_data:

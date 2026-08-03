@@ -1,0 +1,9 @@
+{
+  "name": "@salus/testing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "salus80": "tsx src/salus80.ts", "build": "tsc -p tsconfig.json --noEmit", "lint": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": { "dotenv": "^16.5.0", "pdfkit": "^0.16.0" },
+  "devDependencies": { "@types/pdfkit": "^0.13.8" }
+}

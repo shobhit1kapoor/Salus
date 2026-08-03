@@ -2,28 +2,40 @@
 
 ## Review target
 
-- Selected concept: `C:\Users\shobh\.codex\generated_images\019fc30a-f5b5-7390-9aff-da3d21114b2c\exec-feab0239-d3bf-44a6-af6b-f08ee18382b5.png`
-- Final implementation capture: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-build\desktop-final-2.png`
-- Combined comparison: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-build\design-comparison.png`
-- State: signed-out public landing page with motion assets loaded
-- Browser: Codex in-app browser at `http://localhost:3000/`
+- Source visual truth: `C:\Users\shobh\.codex\generated_images\019fc30a-f5b5-7390-9aff-da3d21114b2c\exec-b3ad6448-8308-4427-a0b6-6138745107f9.png`
+- Browser-rendered implementation: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-option-3\desktop-final.png`
+- Normalized side-by-side comparison: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-option-3\design-comparison.png`
+- Source pixels: 1488 × 1058
+- Implementation pixels: 1584 × 889
+- Viewport and normalization: desktop Codex in-app browser; each artifact was proportionally contained within an equal 760 × 570 comparison region without stretching.
+- State: signed-out public landing page with the option 3 hero video loaded.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain. The implementation preserves option 3's patient-first narrative, split dark/cinematic hero, violet conversion actions, editorial serif hierarchy, caregiver utility row, and protected-operation evidence panel. The implementation viewport is shorter than the source board, so the panel continues below the captured fold; this is an expected viewport difference rather than hidden or clipped page content.
+
+## Required fidelity surfaces
+
+- Fonts and typography: Instrument Serif carries the two-line editorial headline and panel headings. Sans-serif navigation, descriptions, control labels, and evidence metadata retain the source's compact optical weight and hierarchy.
+- Spacing and layout rhythm: the capsule navigation, left-aligned copy, dual actions, trust markers, right-side cinematic subject, and wide two-column evidence panel follow the source order and alignment. The wider final grid prevents the headline and pipeline labels from wrapping incorrectly.
+- Colors and visual tokens: the near-black-to-blue canvas, violet primary actions, mint protection states, restrained white borders, and translucent glass surfaces match the selected direction.
+- Image quality and asset fidelity: the supplied cinematic person-over-clouds video is used as the real hero asset with a left-side readability gradient and a focal crop that keeps the subject away from the copy. Lucide provides the consistent line-icon family; no placeholder, CSS-drawn, or handcrafted SVG imagery is present.
+- Copy and content: the hero accurately describes patient/caregiver workflows and states that raw identifiers and unprotected sensitive values are protected before storage or AI processing. The evidence panel explicitly states that the AI receives pseudonymized, minimum-necessary clinical context.
+- Responsiveness and accessibility: navigation simplifies, care features reflow, the operation pipeline becomes horizontally scrollable, and cards stack at smaller breakpoints. Links remain semantic and keyboard reachable; headings and lists are labelled; videos are decorative and honor reduced motion.
+
+## Interaction and runtime evidence
+
+- “Create a health profile” was tested and resolves to `/login` for a signed-out visitor.
+- “Explore privacy proof” was tested and resolves to `/#evidence`.
+- Navigation, workspace, caregiver, protection, and evidence links remain functional.
+- Browser console errors checked: none.
 
 ## Comparison history
 
-1. The first implementation pass wrapped the hero headline onto three lines and weakened the selected concept's hierarchy. The hero copy width was expanded and the display scale was tightened so the title resolves as the intended two-line statement.
-2. The second pass placed the glass proof panel too close to the Protegrity attribution. The panel was moved down and the hero boundary was allowed to remain visible, restoring a clear separation between the attribution and evidence surface.
-3. The final side-by-side comparison confirms the same cinematic black canvas, centered Instrument Serif headline, valley imagery, restrained mint accents, capsule navigation, two-button conversion path, and seven-stage glass protection panel.
+1. First option 3 pass: the headline wrapped to three lines, the hero subject sat too close to the copy, and the trust markers collided with the evidence panel. These were P2 hierarchy and spacing issues.
+2. Second pass: the copy width and display scale were corrected to restore the source's two-line headline; the navigation and evidence panel were widened to match the source frame; the hero focal crop was moved right.
+3. Final pass: the evidence panel was moved below the trust markers, preserving the intended hierarchy, while the hero overflow and following section spacing keep the panel fully reachable. The post-fix side-by-side comparison shows no actionable P0/P1/P2 mismatch.
 
-## Final checks
-
-- Typography: Instrument Serif is used for the editorial display hierarchy; body and control text retain the product sans-serif system. Headline wrapping, weight, and contrast match the target intent.
-- Layout and spacing: navigation, title, supporting copy, actions, attribution, visual, and evidence panel follow the target order and spatial grouping without collision.
-- Color and surfaces: near-black canvas, desaturated white typography, mint protection accents, violet brand mark, glass borders, blur, and low-contrast shadows are consistent with the selected concept.
-- Assets: all visible imagery uses the supplied cinematic video assets with intentional crops and gradient integration. Icons use a consistent Lucide stroke family; no placeholder or handcrafted SVG artwork is present.
-- Content: privacy language accurately states that raw identifiers and unprotected sensitive values do not reach protected boundaries while pseudonymized, minimum-necessary clinical context may reach the model.
-- Interaction: product anchors, protection/evidence anchors, sign-in, and workspace CTAs were exercised in the in-app browser. The signed-out workspace path resolves to `/login`.
-- Accessibility: the page has semantic navigation and headings, labelled pipeline structure, keyboard-reachable links, visible focus behavior from the shared system, reduced-motion handling for all videos, and practical CTA target sizes.
-- Responsiveness: desktop and the existing tablet/mobile breakpoints were reviewed for grid collapse, navigation simplification, horizontal pipeline scrolling, card stacking, and text reflow. No fixed-width content or clipped controls remain.
-- Runtime: the deployed page reported no browser console errors during the final review.
+Focused-region comparison was not required beyond the full hero comparison because the source and implementation both render the navigation, headline, actions, trust markers, utility icons, pipeline labels, and glass-panel boundaries clearly at the normalized comparison size; each full-resolution image was also inspected independently.
 
 final result: passed

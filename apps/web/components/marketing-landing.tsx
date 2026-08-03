@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef } from "react";
 import {
   ArrowRight, ArrowUpRight, CalendarCheck2, Check, Eye, FileText, HeartPulse,
-  KeyRound, Link2, LockKeyhole, MessageCircle, Pill, Play, Radar, Search,
-  ShieldCheck, Sparkles, UserRound, UsersRound
+  LockKeyhole, MessageCircle, Pill, Radar, Search, ShieldCheck, UsersRound
 } from "lucide-react";
 
 const videos = {
@@ -17,13 +16,19 @@ const videos = {
 };
 
 const pipeline = [
-  { name: "Authorize", note: "purpose + scope", icon: UserRound },
-  { name: "Discover", note: "identify data", icon: Search },
-  { name: "Protect", note: "pseudonymize", icon: ShieldCheck },
-  { name: "Guardrail", note: "policy checks", icon: LockKeyhole },
-  { name: "AI / tools", note: "minimum necessary", icon: Sparkles },
-  { name: "Leak scan", note: "verify safety", icon: Radar },
-  { name: "Reveal", note: "authorized only", icon: Eye }
+  { name: "Discover", note: "Find data sources", icon: Search },
+  { name: "Protect", note: "Pseudonymize & tokenize", icon: LockKeyhole },
+  { name: "Minimize", note: "Limit to what's necessary", icon: Eye },
+  { name: "Guardrail", note: "Policy & prompt controls", icon: ShieldCheck },
+  { name: "Leak scan", note: "Check for exposure", icon: Radar },
+  { name: "Receipt", note: "Verifiable evidence", icon: FileText }
+];
+
+const careFeatures = [
+  { name: "Timeline", note: "See your care journey", icon: CalendarCheck2 },
+  { name: "Medications", note: "Track what you take", icon: Pill },
+  { name: "Follow-ups", note: "Never miss what matters", icon: Check },
+  { name: "Caregiver sharing", note: "Invite trusted caregivers", icon: UsersRound }
 ];
 
 function SeamlessHeroVideo() {
@@ -54,7 +59,7 @@ function SeamlessHeroVideo() {
   return <video
     ref={videoRef}
     className="landing-hero-video"
-    src={videos.hero}
+    src={videos.proof}
     muted
     autoPlay
     playsInline
@@ -113,7 +118,7 @@ export function MarketingLanding({ signedIn }: { signedIn: boolean }) {
           <span><HeartPulse size={21} /></span><strong>Salus</strong>
         </Link>
         <nav aria-label="Landing page navigation">
-          <Link href="#product">Product</Link><Link href="#protection">Protection</Link>
+          <Link href="#product">How it helps</Link><Link href="#protection">Privacy by design</Link>
           <Link href="#caregivers">Caregivers</Link><Link href="#evidence">Evidence</Link>
         </nav>
         <div className="landing-nav-actions">
@@ -123,32 +128,39 @@ export function MarketingLanding({ signedIn }: { signedIn: boolean }) {
       </header>
 
       <div className="landing-hero-copy">
-        <h1>Health intelligence,<br /><em>without the exposure.</em></h1>
-        <p>Salus protects raw patient identifiers and unprotected sensitive values before storage, embeddings, AI, tools, responses, and logs. Models receive only authorized, pseudonymized, minimum-necessary clinical context.</p>
+        <h1>Your health story.<br /><em>Protected at every step.</em></h1>
+        <p>Bring records, medications, follow-ups, and trusted caregivers together—while Protegrity protects raw patient identifiers and unprotected sensitive values before storage or AI processing.</p>
         <div className="landing-hero-actions">
-          <Link className="landing-primary-cta" href={workspaceHref}>Enter workspace <ArrowRight size={18} /></Link>
-          <Link className="landing-secondary-cta liquid-glass" href="#evidence"><Play size={17} /> Watch the protected flow</Link>
+          <Link className="landing-primary-cta" href={workspaceHref}>Create a health profile <ArrowRight size={18} /></Link>
+          <Link className="landing-secondary-cta liquid-glass" href="#evidence">Explore privacy proof</Link>
         </div>
-        <p className="landing-powered"><ShieldCheck size={15} /> Powered by <strong>Protegrity Developer Edition</strong></p>
+        <p className="landing-powered"><ShieldCheck size={17} /><span>Patient-controlled</span><i /> <span>Purpose-bound</span><i /> <span>Verifiable</span></p>
       </div>
 
       <div className="landing-visual" aria-hidden="true"><SeamlessHeroVideo /><div className="landing-visual-shade" /></div>
 
       <section className="landing-proof-panel liquid-glass" id="evidence" aria-labelledby="proof-panel-title">
-        <h2 id="proof-panel-title"><ShieldCheck size={22} /> Protection travels with every request.</h2>
-        <div className="landing-pipeline" role="list" aria-label="Protected AI pipeline">
-          {pipeline.map((step, index) => {
-            const Icon = step.icon;
-            return <div className="landing-pipeline-step" role="listitem" key={step.name}>
-              <span><Icon size={19} /></span><strong>{step.name}</strong><small>{step.note}</small>
-              {index < pipeline.length - 1 && <ArrowRight className="landing-pipeline-arrow" size={16} aria-hidden="true" />}
-            </div>;
-          })}
+        <div className="landing-care-panel">
+          <h2><span><UsersRound size={22} /></span> For everyday care</h2>
+          <div className="landing-care-features" role="list" aria-label="Everyday care features">
+            {careFeatures.map((feature) => {
+              const Icon = feature.icon;
+              return <div role="listitem" key={feature.name}><Icon size={25} /><strong>{feature.name}</strong><small>{feature.note}</small></div>;
+            })}
+          </div>
         </div>
-        <div className="landing-proof-facts">
-          <div><span><UserRound size={22} /></span><p><strong>Pseudonymized context</strong><small>Only authorized clinical context reaches the model.</small></p></div>
-          <div><span><KeyRound size={22} /></span><p><strong>Purpose-bound access</strong><small>Every action is scoped, time-bound, and revocable.</small></p></div>
-          <div><span><Link2 size={22} /></span><p><strong>Hash-chained receipts</strong><small>Tamper-evident evidence for every protected operation.</small></p></div>
+        <div className="landing-operation-panel">
+          <h2 id="proof-panel-title"><span><ShieldCheck size={22} /></span> For every protected operation</h2>
+          <div className="landing-pipeline" role="list" aria-label="Protected AI pipeline">
+            {pipeline.map((step, index) => {
+              const Icon = step.icon;
+              return <div className="landing-pipeline-step" role="listitem" key={step.name}>
+                <span><Icon size={19} /></span><strong>{step.name}</strong><small>{step.note}</small>
+                {index < pipeline.length - 1 && <ArrowRight className="landing-pipeline-arrow" size={16} aria-hidden="true" />}
+              </div>;
+            })}
+          </div>
+          <p className="landing-minimum-necessary"><ShieldCheck size={28} /><span><strong>AI receives pseudonymized, minimum-necessary clinical context.</strong><small>Protection continues across storage, processing, responses, and evidence.</small></span></p>
         </div>
       </section>
     </section>

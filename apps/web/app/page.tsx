@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
+import { MarketingLanding } from "../components/marketing-landing";
 
 export default async function EntryPage() {
   const cookieStore = await cookies();
-  redirect(cookieStore.has("salus_session") ? "/dashboard" : "/login");
+  return <MarketingLanding signedIn={cookieStore.has("salus_session")} />;
 }

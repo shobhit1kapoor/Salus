@@ -1,47 +1,29 @@
-# Salus visual redesign QA
+# Salus landing page design QA
 
-- Source visual truth: `.codex-audit/acl-reference-dashboard.png`
-- Implementation evidence: `.codex-audit/salus-redesign-dashboard.png`
-- Reference pixels: 1265 x 712
-- Implementation pixels: 1258 x 803
-- CSS viewport: desktop application viewport at browser default scale; mobile breakpoint separately checked at a requested 390 x 844 viewport (reported CSS viewport 487 x 1055 because of host display scaling)
-- State: ACL dashboard reference compared with an authenticated Salus patient dashboard containing synthetic care data
-- Density normalization: both browser captures used the same in-app browser and host display density; composition was judged by the shared application content region rather than differing page height
+## Review target
 
-## Full-view comparison evidence
-
-The implementation preserves Salus's existing top bar, sidebar, routes, patient context, and care-dashboard layout. It adopts the reference's pale sage canvas, white fixed navigation surface, near-black active navigation, rounded white cards, pill actions, restrained shadows, uppercase section labels, and vivid accent treatment. The differing page content and top-bar structure are intentional product constraints from the request not to change the Salus layout.
-
-## Focused region comparison evidence
-
-The sidebar and first dashboard viewport were reviewed at readable scale. Active navigation, brand treatment, page heading, assistant callout, care cards, badges, buttons, icon containers, and status surfaces share consistent spacing and token use. No raster imagery was required by either Salus screen; existing Lucide interface icons remain appropriate and consistent.
-
-## Required fidelity surfaces
-
-- Fonts and typography: passed. Inter remains the UI face, with a serif brand wordmark echoing the source. Hierarchy, weights, tracking, and wrapping remain readable.
-- Spacing and layout rhythm: passed. The 250 px sidebar, 80 px top bar, larger page gutters, 20–28 px card radii, and consistent internal padding reproduce the source rhythm without moving Salus sections.
-- Colors and visual tokens: passed. Sage canvas, white surfaces, near-black controls, mint privacy/status accents, and purple assistant accents form a coherent translation of the reference.
-- Image quality and asset fidelity: passed. Neither compared screen depends on photographic or illustrative assets; all visible interface icons use the installed icon library.
-- Copy and content: passed. Salus healthcare and Protegrity language was preserved rather than copying ACL branding or product claims.
-- Responsiveness and accessibility: passed. The mobile breakpoint has no horizontal document overflow, retains the bottom navigation, and includes a reduced-motion override. Focus-visible treatment remains present.
-
-## Findings
-
-No actionable P0, P1, or P2 mismatch remains. The intentional differences are Salus's retained top bar, patient/purpose context, and healthcare-specific information architecture.
+- Selected concept: `C:\Users\shobh\.codex\generated_images\019fc30a-f5b5-7390-9aff-da3d21114b2c\exec-feab0239-d3bf-44a6-af6b-f08ee18382b5.png`
+- Final implementation capture: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-build\desktop-final-2.png`
+- Combined comparison: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-build\design-comparison.png`
+- State: signed-out public landing page with motion assets loaded
+- Browser: Codex in-app browser at `http://localhost:3000/`
 
 ## Comparison history
 
-- Pass 1: the first post-build desktop comparison found no actionable P0/P1/P2 issue. No corrective visual iteration was required.
+1. The first implementation pass wrapped the hero headline onto three lines and weakened the selected concept's hierarchy. The hero copy width was expanded and the display scale was tightened so the title resolves as the intended two-line statement.
+2. The second pass placed the glass proof panel too close to the Protegrity attribution. The panel was moved down and the hero boundary was allowed to remain visible, restoring a clear separation between the attribution and evidence surface.
+3. The final side-by-side comparison confirms the same cinematic black canvas, centered Instrument Serif headline, valley imagery, restrained mint accents, capsule navigation, two-button conversion path, and seven-stage glass protection panel.
 
-## Primary interactions and console
+## Final checks
 
-- Authenticated patient dashboard loaded successfully.
-- Privacy Proof navigation resolved uniquely, opened successfully, and returned to the patient dashboard.
-- Browser console errors: none.
-- Web type-check, web tests, and production build: passed.
-
-## Follow-up polish
-
-- P3: consider adding optional sidebar collapse behavior in a later iteration; it was deliberately excluded because the user requested no layout change.
+- Typography: Instrument Serif is used for the editorial display hierarchy; body and control text retain the product sans-serif system. Headline wrapping, weight, and contrast match the target intent.
+- Layout and spacing: navigation, title, supporting copy, actions, attribution, visual, and evidence panel follow the target order and spatial grouping without collision.
+- Color and surfaces: near-black canvas, desaturated white typography, mint protection accents, violet brand mark, glass borders, blur, and low-contrast shadows are consistent with the selected concept.
+- Assets: all visible imagery uses the supplied cinematic video assets with intentional crops and gradient integration. Icons use a consistent Lucide stroke family; no placeholder or handcrafted SVG artwork is present.
+- Content: privacy language accurately states that raw identifiers and unprotected sensitive values do not reach protected boundaries while pseudonymized, minimum-necessary clinical context may reach the model.
+- Interaction: product anchors, protection/evidence anchors, sign-in, and workspace CTAs were exercised in the in-app browser. The signed-out workspace path resolves to `/login`.
+- Accessibility: the page has semantic navigation and headings, labelled pipeline structure, keyboard-reachable links, visible focus behavior from the shared system, reduced-motion handling for all videos, and practical CTA target sizes.
+- Responsiveness: desktop and the existing tablet/mobile breakpoints were reviewed for grid collapse, navigation simplification, horizontal pipeline scrolling, card stacking, and text reflow. No fixed-width content or clipped controls remain.
+- Runtime: the deployed page reported no browser console errors during the final review.
 
 final result: passed

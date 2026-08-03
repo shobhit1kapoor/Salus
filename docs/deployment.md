@@ -24,7 +24,7 @@ This challenge build uses synthetic data and makes no healthcare-compliance cert
    npx web-push generate-vapid-keys
    ```
 
-4. Keep `DEMO_LOGIN_ENABLED=false`; the production Compose file enforces this along with secure cookies and the exact HTTPS origin.
+4. Keep secure cookies enabled and configure the exact HTTPS web origin. Salus has no passwordless demonstration-login route.
 5. Validate the resolved configuration without starting containers:
 
    ```sh

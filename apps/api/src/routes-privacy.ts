@@ -518,9 +518,16 @@ export async function privacyRoutes(app: FastifyInstance) {
     const { profileId } = profileParams.parse(request.params);
     return withUser(user.id, async (db) => {
       if (!await requirePatientRole(db, profileId)) return reply.code(404).send({ code: "PROFILE_NOT_FOUND" });
-      const summary = await one(db, `SELECT count(*)::int AS "totalReceipts",count(*) FILTER(WHERE status='blocked')::int AS "blockedOperations",count(*) FILTER(WHERE raw_leak_count>0)::int AS "leakEvents",COALESCE(sum(jsonb_array_length(stages)),0)::int AS "verifiedStages",COALESCE(sum(jsonb_array_length(boundary_scans)),0)::int AS "destinationScans" FROM protection_receipts WHERE patient_id=$1`, [profileId]);
-      const recent = await db.query(`SELECT id,trace_id AS "traceId",operation,purpose,status,stages,entity_counts AS "entityCounts",provider,model_provider AS "modelProvider",provider_payload_hash AS "providerPayloadHash",provider_payload_bytes AS "providerPayloadBytes",provider_payload_status AS "providerPayloadStatus",boundary_scans AS "boundaryScans",raw_leak_count AS "rawLeakCount",event_hash AS "eventHash",created_at AS "createdAt" FROM protection_receipts WHERE patient_id=$1 ORDER BY created_at DESC LIMIT 50`, [profileId]);
-      const attacks = await db.query(`SELECT id,scenario_id AS "scenarioId",category,outcome,boundary,trace_id AS "traceId",created_at AS "createdAt" FROM privacy_attack_runs WHERE patient_id=$1 ORDER BY created_at DESC LIMIT 30`, [profileId]);
+      const currentEvidence = `WITH current_receipts AS (
+        SELECT * FROM protection_receipts WHERE patient_id=$1 AND operation NOT LIKE 'attack.%'
+        UNION ALL
+        SELECT * FROM (
+          SELECT DISTINCT ON (operation) * FROM protection_receipts WHERE patient_id=$1 AND operation LIKE 'attack.%' ORDER BY operation,created_at DESC,id DESC
+        ) latest_attacks
+      )`;
+      const summary = await one(db, `${currentEvidence} SELECT count(*)::int AS "totalReceipts",count(*) FILTER(WHERE status='blocked')::int AS "blockedOperations",count(*) FILTER(WHERE raw_leak_count>0 AND status<>'blocked')::int AS "leakEvents",COALESCE(sum(jsonb_array_length(stages)),0)::int AS "verifiedStages",COALESCE(sum(jsonb_array_length(boundary_scans)),0)::int AS "destinationScans" FROM current_receipts`, [profileId]);
+      const recent = await db.query(`${currentEvidence} SELECT id,trace_id AS "traceId",operation,purpose,status,stages,entity_counts AS "entityCounts",provider,model_provider AS "modelProvider",provider_payload_hash AS "providerPayloadHash",provider_payload_bytes AS "providerPayloadBytes",provider_payload_status AS "providerPayloadStatus",boundary_scans AS "boundaryScans",raw_leak_count AS "rawLeakCount",event_hash AS "eventHash",created_at AS "createdAt" FROM current_receipts ORDER BY created_at DESC LIMIT 50`, [profileId]);
+      const attacks = await db.query(`SELECT DISTINCT ON (scenario_id) id,scenario_id AS "scenarioId",category,outcome,boundary,trace_id AS "traceId",created_at AS "createdAt" FROM privacy_attack_runs WHERE patient_id=$1 ORDER BY scenario_id,created_at DESC,id DESC`, [profileId]);
       return { summary, recent: recent.rows, attacks: attacks.rows };
     });
   });

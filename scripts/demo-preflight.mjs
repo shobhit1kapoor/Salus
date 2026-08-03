@@ -67,26 +67,30 @@ async function main() {
 
   const login = await json(`${apiBase}/v1/auth/login`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "user-agent": "Salus Preflight" },
     body: JSON.stringify({ email: reviewerEmail, password: reviewerPassword })
   });
   const cookie = login.response.headers.get("set-cookie")?.split(";")[0];
   if (!cookie) throw new Error("Reviewer login did not return a session cookie.");
-  const profiles = (await json(`${apiBase}/v1/profiles`, { headers: { cookie } })).body;
-  const attacks = (await json(`${apiBase}/v1/privacy/attacks`, { headers: { cookie } })).body;
-  if (!Array.isArray(profiles) || profiles.length < 1) throw new Error("No synthetic reviewer profile is available. Run npm run demo:reset.");
-  if (!Array.isArray(attacks) || attacks.length !== 40) throw new Error(`Attack Lab catalog contains ${Array.isArray(attacks) ? attacks.length : 0}/40 scenarios.`);
+  try {
+    const profiles = (await json(`${apiBase}/v1/profiles`, { headers: { cookie } })).body;
+    const attacks = (await json(`${apiBase}/v1/privacy/attacks`, { headers: { cookie } })).body;
+    if (!Array.isArray(profiles) || profiles.length < 1) throw new Error("No synthetic reviewer profile is available. Run npm run demo:reset.");
+    if (!Array.isArray(attacks) || attacks.length !== 40) throw new Error(`Attack Lab catalog contains ${Array.isArray(attacks) ? attacks.length : 0}/40 scenarios.`);
 
-  console.table([
-    { gate: "Web application", result: "PASS", evidence: `${web.status}` },
-    { gate: "API readiness", result: "PASS", evidence: "Protegrity configured; fail-closed boundary ready" },
-    { gate: "Discovery + protect", result: "PASS", evidence: `${protectedResult.discovery.total} synthetic identifier(s); raw absent` },
-    { gate: "Protected egress", result: "PASS", evidence: "0 raw identifiers; 0 canaries" },
-    { gate: "Reviewer workspace", result: "PASS", evidence: `${profiles.length} protected profile(s)` },
-    { gate: "Attack Lab catalog", result: "PASS", evidence: `${attacks.length}/40 scenarios` },
-    { gate: "NVIDIA configuration", result: "PASS", evidence: "credential present (not displayed)" }
-  ]);
-  console.log("Demo preflight passed. No credential or sensitive value was printed.");
+    console.table([
+      { gate: "Web application", result: "PASS", evidence: `${web.status}` },
+      { gate: "API readiness", result: "PASS", evidence: "Protegrity configured; fail-closed boundary ready" },
+      { gate: "Discovery + protect", result: "PASS", evidence: `${protectedResult.discovery.total} synthetic identifier(s); raw absent` },
+      { gate: "Protected egress", result: "PASS", evidence: "0 raw identifiers; 0 canaries" },
+      { gate: "Reviewer workspace", result: "PASS", evidence: `${profiles.length} protected profile(s)` },
+      { gate: "Attack Lab catalog", result: "PASS", evidence: `${attacks.length}/40 scenarios` },
+      { gate: "NVIDIA configuration", result: "PASS", evidence: "credential present (not displayed)" }
+    ]);
+    console.log("Demo preflight passed. No credential or sensitive value was printed.");
+  } finally {
+    await request(`${apiBase}/v1/auth/logout`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" }).catch(() => undefined);
+  }
 }
 
 main().catch((error) => {

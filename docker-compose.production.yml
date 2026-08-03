@@ -16,7 +16,6 @@ x-database-environment: &database-environment
   PRIVACY_GATEWAY_URL: http://privacy-gateway:8080
   WEB_ORIGIN: https://${SALUS_DOMAIN}
   COOKIE_SECURE: "true"
-  DEMO_LOGIN_ENABLED: "false"
 
 services:
   pattern-provider-service:

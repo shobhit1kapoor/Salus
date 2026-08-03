@@ -10,10 +10,10 @@ describe("api request headers", () => {
       headers: { "Content-Type": "application/json" }
     }));
 
-    await api("/v1/auth/demo-login", { method: "POST" });
+    await api("/v1/empty-action", { method: "POST" });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:4000/v1/auth/demo-login",
+      "http://localhost:4000/v1/empty-action",
       expect.objectContaining({ headers: undefined })
     );
   });

@@ -11,7 +11,6 @@ const schema = z.object({
   TOOL_CAPABILITY_SECRET: optionalNonEmptyString,
   COOKIE_SECURE: z.preprocess((value) => value === "true" || value === true, z.boolean()).default(false),
   WEB_ORIGIN: z.string().url(),
-  DEMO_LOGIN_ENABLED: z.preprocess((value) => value === "true" || value === true, z.boolean()).default(false),
   SEED_REVIEWER_EMAIL: z.string().email().default("reviewer@salus.local"),
   API_PORT: z.coerce.number().int().positive().default(4000),
   PRIVACY_GATEWAY_URL: z.string().url().default("http://localhost:8080"),

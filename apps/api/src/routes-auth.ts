@@ -9,26 +9,7 @@ import { privacyTraceId, protectText, recordProtectionReceipt } from "./privacy.
 
 const credentials = z.object({ email: z.string().email().transform((value) => value.toLowerCase()), password: z.string().min(12).max(128) });
 const tokenHash = hashAuthToken;
-const demoLoginEnabled = () => {
-  const hostname = new URL(env.WEB_ORIGIN).hostname;
-  return env.DEMO_LOGIN_ENABLED && (hostname === "localhost" || hostname === "127.0.0.1");
-};
-
 export async function authRoutes(app: FastifyInstance) {
-  app.get("/v1/auth/demo-status", async () => ({ enabled: demoLoginEnabled() }));
-
-  app.post("/v1/auth/demo-login", { config: { rateLimit: { max: 20, timeWindow: "15 minutes" } } }, async (request, reply) => {
-    if (!demoLoginEnabled()) return reply.code(404).send({ code: "NOT_FOUND", message: "Demo login is unavailable." });
-    const protectedEmail = await protectText(env.SEED_REVIEWER_EMAIL.toLowerCase(), privacyTraceId(), "account_security");
-    const result = await pool.query<{ id: string }>("SELECT id FROM users WHERE identity_fingerprint=$1 AND email_verified_at IS NOT NULL AND deleted_at IS NULL", [protectedEmail.fingerprint]);
-    const user = result.rows[0];
-    if (!user) return reply.code(503).send({ code: "DEMO_UNAVAILABLE", message: "The synthetic demo workspace has not been seeded." });
-    const session = await createSession(user.id, request);
-    const cookie = sessionCookie(session.raw, session.expiresAt);
-    reply.setCookie(cookie.name, cookie.value, cookie.options);
-    return { message: "Synthetic demo session started." };
-  });
-
   app.post("/v1/auth/register", { config: { rateLimit: { max: 5, timeWindow: "1 hour" } } }, async (request, reply) => {
     const body = credentials.extend({ displayName: z.string().trim().min(1).max(120) }).parse(request.body);
     const passwordHash = await hashPassword(body.password);
@@ -158,7 +139,11 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.get("/v1/auth/sessions", async (request, reply) => {
     const user = await currentUser(request); if (!user) return reply.code(401).send({ code: "AUTH_REQUIRED" });
-    const result = await pool.query("SELECT id,created_at,expires_at,user_agent,revoked_at IS NULL AS active FROM sessions WHERE user_id=$1 ORDER BY created_at DESC", [user.id]);
+    const currentSessionHash = request.cookies.salus_session ? tokenHash(request.cookies.salus_session) : "";
+    const result = await pool.query(`SELECT id,created_at AS "createdAt",expires_at AS "expiresAt",user_agent AS "userAgent",token_hash=$2 AS "current"
+      FROM sessions
+      WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>now()
+      ORDER BY (token_hash=$2) DESC,created_at DESC`, [user.id, currentSessionHash]);
     return result.rows;
   });
 

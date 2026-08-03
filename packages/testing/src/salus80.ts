@@ -31,7 +31,7 @@ if (!readiness.ok || readinessBody?.status !== "ready" || readinessBody.privacy?
   throw new Error(`Salus 80 preflight failed: the production Protegrity boundary is not ready (${readiness.status}).`);
 }
 
-const login = await fetch(`${base}/v1/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
+const login = await fetch(`${base}/v1/auth/login`, { method: "POST", headers: { "content-type": "application/json", "user-agent": "Salus Acceptance Runner" }, body: JSON.stringify({ email, password }) });
 if (!login.ok) throw new Error(`Salus 80 login failed (${login.status})`);
 const cookie = login.headers.get("set-cookie")?.split(";")[0];
 if (!cookie) throw new Error("Session cookie missing");

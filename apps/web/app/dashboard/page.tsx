@@ -46,7 +46,6 @@ export default function DashboardPage() {
           legalName: data.get("legalName") || undefined,
           dateOfBirth: data.get("dateOfBirth") || undefined,
           relationship: profileType === "dependent" ? data.get("relationship") : undefined,
-          pronouns: data.get("pronouns") || undefined,
           language: "en",
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
         })
@@ -100,7 +99,7 @@ export default function DashboardPage() {
         <label>Preferred name<input name="preferredName" required autoFocus /></label>
         {profileType === "dependent" && <label>Your relationship<input name="relationship" required placeholder="Parent, child, partner…" /></label>}
         <label>Legal name <span className="optional">optional</span><input name="legalName" /></label>
-        <div className="form-row"><label>Date of birth<input type="date" name="dateOfBirth" /></label><label>Pronouns<input name="pronouns" placeholder="Optional" /></label></div>
+        <label>Date of birth<input type="date" name="dateOfBirth" /></label>
         <label className="attestation"><input type="checkbox" required /> I confirm I am creating this profile for myself or I am authorized to support this person.</label>
         <div className="dialog-actions"><button type="button" className="text-button" onClick={() => setAdding(false)}>Cancel</button><button className="primary-button compact"><ShieldCheck size={17} />Protect and create</button></div>
       </form>

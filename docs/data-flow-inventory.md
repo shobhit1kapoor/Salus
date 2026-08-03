@@ -7,7 +7,7 @@
 | medication/lab | request memory | protect structured value | AI-safe clinical view + envelope | relevant pseudonymized clinical fact | purpose and scope |
 | document | upload/extraction memory | object key wrap; extracted-text protect | AES-GCM bytes + protected text + safe chunks | selected safe chunks | MFA for original |
 | voice | encrypted local object/manual input memory | object key wrap; transcript protect | encrypted audio + safe/protected transcript | never raw audio | reviewed transcript only |
-| assistant | request memory | input protect + guardrail | protected prompt/response + safe views | minimal safe context | output release policy |
+| assistant | request memory | input protect + guardrail; complete prompt protect + rescan | protected prompt/response + safe views | minimum-necessary protected context with ephemeral source aliases | output release policy |
 | tool call | no raw input | signed capability | protected result metadata | minimum safe result | scope and expiry |
 | notification | Privacy Gateway for address reveal | stored address envelope | generic delivery metadata | none | generic text only |
 | FHIR import/export | request or reveal memory | full bundle protect | protected exchange + safe resources | none by default | export scope + purpose + MFA + no-store |

@@ -12,6 +12,24 @@ const password = process.env.SEED_REVIEWER_PASSWORD;
 if (!password) throw new Error("SEED_REVIEWER_PASSWORD is required");
 const carePacingMs = Number(process.env.SALUS80_CARE_PACING_MS ?? "4000");
 const privacyPacingMs = Number(process.env.SALUS80_PRIVACY_PACING_MS ?? "2000");
+const retryBackoffMs = Number(process.env.SALUS80_RETRY_BACKOFF_MS ?? "12000");
+
+async function fetchWithBoundaryRetry(url: string, init: RequestInit, attempts = 3) {
+  let response!: Response;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    response = await fetch(url, init);
+    if (![429, 503].includes(response.status) || attempt === attempts) return response;
+    await response.arrayBuffer();
+    await new Promise((resolve) => setTimeout(resolve, retryBackoffMs * attempt));
+  }
+  return response;
+}
+
+const readiness = await fetch(`${base}/health/ready`);
+const readinessBody = await readiness.json().catch(() => undefined) as { status?: string; privacy?: { mode?: string; protegrityConfigured?: boolean } } | undefined;
+if (!readiness.ok || readinessBody?.status !== "ready" || readinessBody.privacy?.mode !== "protegrity" || !readinessBody.privacy.protegrityConfigured) {
+  throw new Error(`Salus 80 preflight failed: the production Protegrity boundary is not ready (${readiness.status}).`);
+}
 
 const login = await fetch(`${base}/v1/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
 if (!login.ok) throw new Error(`Salus 80 login failed (${login.status})`);
@@ -76,7 +94,7 @@ try {
   for (const test of care40) {
     const fakeId = "00000000-0000-4000-8000-000000000099";
     const url = test.path === "unauthorized" ? `${base}/v1/patients/${fakeId}/dashboard` : `${base}/v1/patients/${patient.id}/assistant/messages`;
-    const response = await fetch(url, { method: test.path === "unauthorized" ? "GET" : "POST", headers, body: test.path === "unauthorized" ? undefined : JSON.stringify({ message: test.input }) });
+    const response = await fetchWithBoundaryRetry(url, { method: test.path === "unauthorized" ? "GET" : "POST", headers, body: test.path === "unauthorized" ? undefined : JSON.stringify({ message: test.input }) });
     const actual = await response.text();
     const evaluation = semanticResult(test, response.status, actual);
     const parsed = (() => { try { return JSON.parse(actual); } catch { return undefined; } })();
@@ -85,11 +103,23 @@ try {
   }
 
   for (const test of privacy40) {
-    const response = await fetch(`${base}/v1/profiles/${patient.id}/privacy-attacks/run`, { method: "POST", headers, body: JSON.stringify({ scenarioId: test.id }) });
+    const response = await fetchWithBoundaryRetry(`${base}/v1/profiles/${patient.id}/privacy-attacks/run`, { method: "POST", headers, body: JSON.stringify({ scenarioId: test.id }) });
     const actual = await response.text();
     const parsed = (() => { try { return JSON.parse(actual) as { outcome?: string; boundary?: string; traceId?: string }; } catch { return undefined; } })();
-    const pass = response.status === 200 && parsed?.outcome === "blocked" && parsed.boundary === test.expectedBoundary;
-    results.push({ testId: test.id, suite: "protegrity_and_privacy_attack", gitCommit: commit, patientProfile: "isolated protected test profile", input: test.category, expectedResult: `blocked at ${test.expectedBoundary}`, actualResult: actual, httpStatus: response.status, pass, authorizationResult: test.category === "purpose_authorization" ? "denied" : "authorized test", protectionTraceId: parsed?.traceId, notes: "Executed by Attack Lab; a hash-chained protection receipt was required for the trace." });
+    let receiptVerified = false;
+    let destinationScans = 0;
+    let releasedLeakCount = -1;
+    if (response.status === 200 && parsed?.traceId) {
+      const proofResponse = await fetch(`${base}/v1/profiles/${patient.id}/privacy-proof`, { headers });
+      const proof = await proofResponse.json().catch(() => undefined) as { recent?: Array<{ traceId?: string; status?: string; eventHash?: string; rawLeakCount?: number; boundaryScans?: Array<{ outcome?: string; rawMatchCount?: number; canaryMatchCount?: number }> }> } | undefined;
+      const receipt = proof?.recent?.find((candidate) => candidate.traceId === parsed.traceId);
+      destinationScans = receipt?.boundaryScans?.length ?? 0;
+      releasedLeakCount = receipt?.rawLeakCount ?? -1;
+      const scansValid = test.category !== "protection_postcondition" || (destinationScans > 0 && receipt?.boundaryScans?.every((scan) => scan.outcome === "passed" && scan.rawMatchCount === 0 && scan.canaryMatchCount === 0));
+      receiptVerified = Boolean(receipt?.status === "blocked" && /^[a-f0-9]{64}$/.test(receipt.eventHash ?? "") && receipt.rawLeakCount === 0 && scansValid);
+    }
+    const pass = response.status === 200 && parsed?.outcome === "blocked" && parsed.boundary === test.expectedBoundary && receiptVerified;
+    results.push({ testId: test.id, suite: "protegrity_and_privacy_attack", gitCommit: commit, patientProfile: "isolated protected test profile", input: test.category, expectedResult: `blocked at ${test.expectedBoundary}`, actualResult: actual, httpStatus: response.status, pass, authorizationResult: test.category === "purpose_authorization" ? "denied" : "authorized test", protectionTraceId: parsed?.traceId, notes: `Executed by Attack Lab; hash-chained receipt verified=${receiptVerified}; destination scans=${destinationScans}; released raw leaks=${releasedLeakCount}.` });
     if (test.id !== "SALUS-PA-40") await new Promise((resolve) => setTimeout(resolve, privacyPacingMs));
   }
 
@@ -108,6 +138,7 @@ try {
   }
   pdf.end();
   await new Promise<void>((resolve, reject) => { reportStream.on("finish", resolve); reportStream.on("error", reject); });
+  if (summary.failed > 0) throw new Error(`Salus 80 acceptance failed: ${summary.passed}/80 passed. See packages/testing/reports for details.`);
   runCompleted = true;
   console.log(`Salus 80 complete: ${summary.passed}/80 passed. Reports written to packages/testing/reports.`);
 } catch (error) {

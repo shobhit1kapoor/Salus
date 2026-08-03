@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { CarePurpose, CareScope, ProtectedEnvelope, ProtectionStage } from "@salus/contracts";
+import type { BoundaryScan, CarePurpose, CareScope, ProtectedEnvelope, ProtectionStage } from "@salus/contracts";
 import { env } from "./env.js";
 import { one, type Db } from "./db.js";
 
@@ -123,6 +123,11 @@ export type ReceiptInput = {
   stages: ProtectionStage[];
   entityCounts?: Record<string, number>;
   provider?: string;
+  modelProvider?: string;
+  providerPayloadHash?: string;
+  providerPayloadBytes?: number;
+  providerPayloadStatus?: "protected" | "blocked" | "not_called";
+  boundaryScans?: BoundaryScan[];
   rawLeakCount?: number;
 };
 
@@ -141,12 +146,18 @@ export async function recordProtectionReceipt(db: Db, input: ReceiptInput) {
     stages: input.stages,
     entityCounts: input.entityCounts ?? {},
     provider: input.provider ?? "protegrity",
+    modelProvider: input.modelProvider ?? null,
+    providerPayloadHash: input.providerPayloadHash ?? null,
+    providerPayloadBytes: input.providerPayloadBytes ?? null,
+    providerPayloadStatus: input.providerPayloadStatus ?? null,
+    boundaryScans: input.boundaryScans ?? [],
     rawLeakCount: input.rawLeakCount ?? 0
   })).digest("hex");
-  return one<{ id: string; event_hash: string }>(db, `INSERT INTO protection_receipts(trace_id,patient_id,actor_id,operation,purpose,status,stages,entity_counts,provider,raw_leak_count,previous_hash,event_hash)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,event_hash`, [
+  return one<{ id: string; event_hash: string }>(db, `INSERT INTO protection_receipts(trace_id,patient_id,actor_id,operation,purpose,status,stages,entity_counts,provider,model_provider,provider_payload_hash,provider_payload_bytes,provider_payload_status,boundary_scans,raw_leak_count,previous_hash,event_hash)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id,event_hash`, [
       input.traceId, input.patientId ?? null, input.actorId ?? null, input.operation, input.purpose, input.status,
       JSON.stringify(input.stages), JSON.stringify(input.entityCounts ?? {}), input.provider ?? "protegrity",
-      input.rawLeakCount ?? 0, previousHash, eventHash
+      input.modelProvider ?? null, input.providerPayloadHash ?? null, input.providerPayloadBytes ?? null,
+      input.providerPayloadStatus ?? null, JSON.stringify(input.boundaryScans ?? []), input.rawLeakCount ?? 0, previousHash, eventHash
     ]);
 }

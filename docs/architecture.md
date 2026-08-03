@@ -17,19 +17,21 @@ flowchart LR
   A & D & P & GI & S & R & M & GO & V --> E["Hash-chained Protection Receipt"]
 ```
 
-The Privacy Gateway is the only component holding Protegrity credentials or calling unprotect. It disables SDK payload logging and records only trace IDs, timings, entity types, and counts. The API checks its readiness and fails closed when Protegrity cannot prove protection.
+The Privacy Gateway is the only component holding Protegrity credentials or calling unprotect. It disables SDK payload logging and records only trace IDs, timings, entity types, and counts. The API checks its readiness and fails closed when Protegrity cannot prove protection. Long records and realistic RAG payloads are discovered in bounded overlapping chunks, with entity offsets mapped back to the original in-memory value before protection.
 
 ## Three controlled representations
 
 | Representation | Content | Allowed destinations |
 |---|---|---|
 | Canonical protected envelope | Full value encrypted with a per-trace AES-256-GCM key; the data key is wrapped once by Protegrity and carried inside the versioned envelope | protected database columns only; Privacy Gateway unwraps after authorized reveal |
-| AI-safe semantic view | deterministic pseudonyms plus purpose-minimized clinical facts | RLS database fields, chunks, vectors, scoped tools, provider payload |
+| AI-safe semantic view | per-trace pseudonyms plus purpose-minimized clinical facts | RLS database fields, chunks, vectors, scoped tools, provider payload |
 | Evidence metadata | hashes, entity types/counts, decisions, durations, outcomes | Protection Receipts, Privacy Proof, audit exports |
 
 “No identifier detected” is not treated as “no health data.” Full canonical clinical payloads remain protected even when classification finds no identifier; a separate view is deliberately minimized for clinical retrieval and reasoning.
 
 One trace key is reused only inside the short-lived Privacy Gateway memory window for that trace, allowing input and output to share a cryptographic boundary without repeating hosted protection calls. Every persisted `SALUS1` envelope contains the Protegrity-wrapped key, a fresh nonce, and AES-GCM ciphertext. Web, API, workers, tools, and model adapters never receive the unwrapped key. A gateway restart requires Protegrity unprotect before an existing envelope can be revealed.
+
+Before NVIDIA egress, Salus assembles only purpose-authorized sources, replaces database UUIDs with ephemeral `source-N` aliases, protects and rescans the complete model prompt, then inspects the patient-bearing message contents in the exact serialized request. The full serialized payload is hashed and byte-counted for evidence; neither its contents nor credentials are logged. Returned aliases are mapped back to the server-side citation allowlist only after structured-output validation.
 
 ## Document boundary
 

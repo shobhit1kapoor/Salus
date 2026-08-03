@@ -7,7 +7,8 @@ import { ErrorMessage, Loading } from "../../../../components/status";
 import { api, API_URL } from "../../../../lib/api";
 
 type Message = { id: string; role: "user" | "assistant"; content: string; citations: Array<{ sourceId: string; label: string }>; createdAt: string };
-type VoiceReview = { id: string; status: string; originalTranscript?: string; editedTranscript?: string; structuredResult?: { manualTranscriptionRequired?: boolean } };
+type VoiceReview = { id: string; status: string; originalTranscript?: string; editedTranscript?: string; structuredResult?: { manualTranscriptionRequired?: boolean; error?: string }; createdAt?: string };
+type VoicePhase = "idle" | "requesting" | "recording" | "uploading" | "processing";
 
 export default function AssistantPage({ params }: { params: Promise<{ patientId: string }> }) {
   const { patientId } = use(params);
@@ -16,18 +17,43 @@ export default function AssistantPage({ params }: { params: Promise<{ patientId:
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [recording, setRecording] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(null);
+  const [pendingVoiceCount, setPendingVoiceCount] = useState(0);
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
+  const recordButton = useRef<HTMLButtonElement | null>(null);
+  const recordingLimit = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    const dashboard = await api<{ patient: { id: string; preferredName: string } }>(`/v1/patients/${patientId}/dashboard`);
-    setPatient(dashboard.patient);
-    setMessages(await api(`/v1/patients/${patientId}/assistant/messages`));
+  const loadPendingVoices = useCallback(async () => {
+    const pending = await api<VoiceReview[]>(`/v1/patients/${patientId}/voice/pending`);
+    setPendingVoiceCount(pending.length);
+    setVoiceReview(pending[0] ?? null);
   }, [patientId]);
 
-  useEffect(() => { load().catch((caught) => setError(caught instanceof Error ? caught.message : "Could not open assistant.")); }, [load]);
+  const load = useCallback(async () => {
+    const [dashboard, loadedMessages, pending] = await Promise.all([
+      api<{ patient: { id: string; preferredName: string } }>(`/v1/patients/${patientId}/dashboard`),
+      api<Message[]>(`/v1/patients/${patientId}/assistant/messages`),
+      api<VoiceReview[]>(`/v1/patients/${patientId}/voice/pending`),
+    ]);
+    setPatient(dashboard.patient);
+    setMessages(loadedMessages);
+    setPendingVoiceCount(pending.length);
+    setVoiceReview(pending[0] ?? null);
+  }, [patientId]);
+
+  useEffect(() => {
+    load().catch((caught) => setError(caught instanceof Error ? caught.message : "Could not open assistant."));
+    if (new URLSearchParams(window.location.search).get("voice") === "1") {
+      setNotice("Ready for a private voice question. Press the microphone, speak, then press stop and review what you asked.");
+      requestAnimationFrame(() => recordButton.current?.focus());
+    }
+    return () => {
+      if (recordingLimit.current) clearTimeout(recordingLimit.current);
+      recorder.current?.stream.getTracks().forEach((track) => track.stop());
+    };
+  }, [load]);
 
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -38,47 +64,97 @@ export default function AssistantPage({ params }: { params: Promise<{ patientId:
     try {
       const result = await api<{ message: Message }>(`/v1/patients/${patientId}/assistant/messages`, { method: "POST", body: JSON.stringify({ message }) });
       setMessages((current) => [...current, result.message]);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Salus could not respond.");
-    } finally { setBusy(false); }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Salus could not respond."); }
+    finally { setBusy(false); }
   }
 
   async function waitForVoiceReview(voiceId: string) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const voice = await api<VoiceReview>(`/v1/patients/${patientId}/voice/${voiceId}`);
-      if (voice.status === "needs_review" || voice.status === "failed") { setVoiceReview(voice); return; }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    setNotice("The recording is still processing. You can safely return to this workspace later.");
+    setVoicePhase("processing");
+    try {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const voice = await api<VoiceReview>(`/v1/patients/${patientId}/voice/${voiceId}`);
+        if (voice.status === "needs_review") {
+          setVoiceReview(voice); setPendingVoiceCount((count) => count + 1);
+          setNotice("Recording is ready. Enter or review the question before asking Salus.");
+          return;
+        }
+        if (voice.status === "failed") throw new Error(voice.structuredResult?.error ?? "The private recording could not be prepared for review.");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      setNotice("The recording is still processing. It will reappear here automatically when you return.");
+    } finally { setVoicePhase("idle"); }
   }
 
   async function toggleRecording() {
-    if (recording) { recorder.current?.stop(); setRecording(false); return; }
+    if (voicePhase === "recording") {
+      if (recordingLimit.current) clearTimeout(recordingLimit.current);
+      recorder.current?.stop(); setVoicePhase("uploading"); return;
+    }
+    if (voicePhase !== "idle") return;
     setError(""); setNotice("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); chunks.current = [];
-      recorder.current = new MediaRecorder(stream);
-      recorder.current.ondataavailable = (event) => chunks.current.push(event.data);
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") throw new Error("UNSUPPORTED");
+      setVoicePhase("requesting");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      chunks.current = [];
+      const preferredType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
+      recorder.current = new MediaRecorder(stream, preferredType ? { mimeType: preferredType } : undefined);
+      recorder.current.ondataavailable = (chunk) => { if (chunk.data.size > 0) chunks.current.push(chunk.data); };
+      recorder.current.onerror = () => {
+        stream.getTracks().forEach((track) => track.stop()); setVoicePhase("idle");
+        setError("The browser stopped the recording unexpectedly. Please try again.");
+      };
       recorder.current.onstop = async () => {
         stream.getTracks().forEach((track) => track.stop());
-        const form = new FormData(); form.append("file", new Blob(chunks.current, { type: recorder.current?.mimeType || "audio/webm" }), "care-update.webm");
+        const mimeType = recorder.current?.mimeType || "audio/webm";
+        const recording = new Blob(chunks.current, { type: mimeType });
+        if (!recording.size) { setVoicePhase("idle"); setError("No audio was captured. Check the selected microphone and try again."); return; }
+        const form = new FormData();
+        form.append("file", recording, `ask-salus-question.${mimeType.includes("mp4") ? "m4a" : "webm"}`);
         try {
           const response = await fetch(`${API_URL}/v1/patients/${patientId}/voice`, { method: "POST", credentials: "include", body: form });
-          const body = await response.json();
-          if (!response.ok) throw new Error(body.message ?? body.code ?? "Upload failed");
-          setNotice("Recording securely uploaded. Review the transcript before adding it to the timeline.");
+          const body = await response.json().catch(() => null) as { id?: string; message?: string; code?: string } | null;
+          if (!response.ok) throw new Error(body?.message ?? body?.code ?? "Upload failed");
+          if (!body?.id) throw new Error("The protected voice job did not return an identifier.");
+          setNotice("Recording securely uploaded. Preparing the private review step…");
           await waitForVoiceReview(body.id);
-        } catch (caught) { setError(caught instanceof Error ? caught.message : "The recording could not be uploaded."); }
+        } catch (caught) { setVoicePhase("idle"); setError(caught instanceof Error ? caught.message : "The recording could not be uploaded."); }
       };
-      recorder.current.start(); setRecording(true);
-    } catch { setError("Microphone access was unavailable. Check the browser permission and try again."); }
+      recorder.current.start(1000); setVoicePhase("recording");
+      recordingLimit.current = setTimeout(() => {
+        if (recorder.current?.state === "recording") { recorder.current.stop(); setVoicePhase("uploading"); }
+      }, 60_000);
+      setNotice("Recording privately. Press stop when finished; maximum length is 60 seconds.");
+    } catch (caught) {
+      setVoicePhase("idle");
+      setError(caught instanceof Error && caught.message === "UNSUPPORTED" ? "Voice recording is not supported in this browser." : "Microphone access was unavailable. Allow microphone access for localhost and try again.");
+    }
   }
 
-  async function confirmVoice(event: FormEvent<HTMLFormElement>) {
+  async function askWithVoice(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!voiceReview) return;
-    const form = new FormData(event.currentTarget);
-    await api(`/v1/patients/${patientId}/voice/${voiceReview.id}/confirm`, { method: "POST", body: JSON.stringify({ editedTranscript: form.get("transcript"), category: form.get("category"), occurredAt: new Date(String(form.get("occurredAt"))).toISOString() }) });
-    setVoiceReview(null); setNotice("Voice update confirmed and added to the patient timeline.");
+    const form = new FormData(event.currentTarget); const transcript = String(form.get("transcript") ?? "").trim();
+    if (!transcript) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ message: Message }>(`/v1/patients/${patientId}/assistant/messages`, { method: "POST", body: JSON.stringify({ message: transcript }) });
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: transcript, citations: [], createdAt: new Date().toISOString() }, result.message]);
+      await api(`/v1/patients/${patientId}/voice/${voiceReview.id}/consume`, { method: "POST", body: "{}" });
+      setNotice("Voice question sent to Ask Salus. The temporary audio was deleted and nothing was added to the timeline.");
+      await loadPendingVoices();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "The voice question could not be sent."); }
+    finally { setBusy(false); }
+  }
+
+  async function discardVoice() {
+    if (!voiceReview) return;
+    setBusy(true); setError("");
+    try {
+      await api(`/v1/patients/${patientId}/voice/${voiceReview.id}`, { method: "DELETE" });
+      setNotice("Temporary voice recording deleted. Nothing was added to Ask Salus or the timeline.");
+      await loadPendingVoices();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "The temporary recording could not be deleted."); }
+    finally { setBusy(false); }
   }
 
   if (!patient) return <AppShell>{error ? <ErrorMessage message={error} /> : <Loading label="Opening private assistant…" />}</AppShell>;
@@ -90,8 +166,8 @@ export default function AssistantPage({ params }: { params: Promise<{ patientId:
       {busy && <div className="thinking"><span /><span /><span /> Reviewing authorized records</div>}
     </section>
     {error && <div className="message error" role="alert">{error}</div>}{notice && <div className="message success" role="status">{notice}</div>}
-    {voiceReview && <form className="panel voice-review stack" onSubmit={confirmVoice}><div><p className="overline">Confirm voice update</p><h2>{voiceReview.originalTranscript ? "Review the NVIDIA transcript" : "Enter the transcript manually"}</h2><p>{voiceReview.structuredResult?.manualTranscriptionRequired ? "Hosted speech transcription is not configured. The recording remains private while you provide the text." : "Correct any transcription errors before saving."}</p></div><label>Transcript<textarea name="transcript" required maxLength={12000} defaultValue={voiceReview.editedTranscript ?? voiceReview.originalTranscript ?? ""} /></label><div className="form-row"><label>Category<select name="category" defaultValue="note"><option value="note">Note</option><option value="symptom">Symptom</option><option value="meal">Meal</option><option value="hydration">Hydration</option><option value="sleep">Sleep</option><option value="mood">Mood</option><option value="fall">Fall</option><option value="medication">Medication</option></select></label><label>Occurred at<input type="datetime-local" name="occurredAt" required defaultValue={new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)} /></label></div><div className="dialog-actions"><button type="button" className="text-button" onClick={() => setVoiceReview(null)}>Cancel</button><button className="primary-button compact">Confirm timeline entry</button></div></form>}
-    <form className="composer" onSubmit={send}><button type="button" className={recording ? "record-button active" : "record-button"} aria-label={recording ? "Stop recording" : "Record voice update"} onClick={() => void toggleRecording()}>{recording ? <StopCircle /> : <Mic />}</button><label className="sr-only" htmlFor="message">Message Salus</label><input id="message" name="message" autoComplete="off" placeholder={`Ask about ${patient.preferredName}'s care…`} maxLength={12000} /><button className="send-button" disabled={busy} aria-label="Send message"><ArrowUp /></button></form>
-    <p className="medical-note">Salus organizes information and flags predefined risks. It does not diagnose, prescribe, or replace professional care.</p>
+    {voiceReview && <form className="panel voice-review stack" onSubmit={askWithVoice}><div><p className="overline">Ask with voice{pendingVoiceCount > 1 ? ` · ${pendingVoiceCount} pending` : ""}</p><h2>{voiceReview.originalTranscript ? "Review the local transcript" : "Enter what you asked"}</h2><p>{voiceReview.structuredResult?.manualTranscriptionRequired ? "For privacy, raw audio is not sent to a hosted speech model. Enter what you said, then Salus will protect it and answer it as a question—not save it as a care event." : "Correct any transcription errors before asking Salus."}</p></div><label>Voice question<textarea name="transcript" required maxLength={12000} defaultValue={voiceReview.editedTranscript ?? voiceReview.originalTranscript ?? ""} autoFocus /></label><div className="dialog-actions"><button type="button" className="text-button danger-text" onClick={() => void discardVoice()} disabled={busy}>Discard recording</button><button type="button" className="text-button" onClick={() => { setVoiceReview(null); setNotice("Recording kept in the pending review queue."); }} disabled={busy}>Review later</button><button className="primary-button compact" disabled={busy}>{busy ? "Asking Salus…" : "Ask Salus"}</button></div></form>}
+    <form className="composer" onSubmit={send}><button ref={recordButton} type="button" className={voicePhase === "recording" ? "record-button active" : "record-button"} aria-label={voicePhase === "recording" ? "Stop recording" : voicePhase === "idle" ? "Record voice question" : "Voice question processing"} aria-pressed={voicePhase === "recording"} disabled={!(["idle", "recording"] as VoicePhase[]).includes(voicePhase)} onClick={() => void toggleRecording()}>{voicePhase === "recording" ? <StopCircle /> : <Mic />}</button><label className="sr-only" htmlFor="message">Message Salus</label><input id="message" name="message" autoComplete="off" placeholder={voicePhase === "idle" ? `Ask about ${patient.preferredName}'s care…` : voicePhase === "requesting" ? "Waiting for microphone permission…" : voicePhase === "uploading" ? "Securely uploading voice question…" : voicePhase === "processing" ? "Preparing private transcript review…" : "Recording — press stop when finished"} maxLength={12000} disabled={voicePhase !== "idle"} /><button className="send-button" disabled={busy || voicePhase !== "idle"} aria-label="Send message"><ArrowUp /></button></form>
+    <p className="medical-note">Voice questions stay inside Salus, never create timeline events, and require transcript review before they are sent. Salus does not diagnose, prescribe, or replace professional care.</p>
   </div></AppShell>;
 }

@@ -10,7 +10,9 @@
     "lint": "npm run lint --workspaces --if-present",
     "schema:apply": "npm run schema:apply -w @salus/api",
     "seed": "npm run seed -w @salus/api",
-    "salus80": "npm run salus80 -w @salus/testing"
+    "salus80": "npm run salus80 -w @salus/testing",
+    "demo:preflight": "node scripts/demo-preflight.mjs",
+    "demo:reset": "node scripts/demo-reset.mjs"
   },
   "dependencies": {
     "postcss": "8.5.25",

@@ -87,6 +87,23 @@ export default function DocumentsPage({ params }: { params: Promise<{ patientId:
     setDetail(null); setNotice(""); await load();
   }
 
+  async function retryImport() {
+    if (!detail) return;
+    const documentId = detail.document.id;
+    setError(""); setNotice(""); setUploading(true);
+    try {
+      await api(`/v1/patients/${patientId}/documents/${documentId}/retry`, { method: "POST" });
+      setNotice("Protected import retry started."); setDetail(null);
+      for (let attempt = 0; attempt < 45; attempt += 1) {
+        const latest = await api<Document[]>(`/v1/patients/${patientId}/documents`); setDocuments(latest);
+        const retried = latest.find((document) => document.id === documentId);
+        if (retried && retried.status !== "processing") { await openDocument(retried.id); if (retried.status === "verified") setNotice("Document imported successfully."); else setError(retried.failureReason ?? "The retry failed."); break; }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "The import retry could not start."); }
+    finally { setUploading(false); }
+  }
+
   async function revealOriginal(documentId: string, reason?: string) {
     const statedReason = reason ?? window.prompt("State why the original document is necessary (minimum 8 characters):") ?? "";
     if (statedReason.trim().length < 8) { setError("A specific reveal reason of at least 8 characters is required."); return; }
@@ -108,7 +125,7 @@ export default function DocumentsPage({ params }: { params: Promise<{ patientId:
       {detail.document.failureReason ? <ErrorMessage message={detail.document.failureReason} /> : <p className="muted">Salus retained source provenance for every automatically imported item.</p>}
       <div className="fact-list">{detail.facts.map((fact) => <article className="fact-row" key={fact.id}><div><strong>{fact.field.replaceAll("_", " ")}</strong><pre>{JSON.stringify(fact.proposedValue, null, 2)}</pre>{fact.materializedResourceType && <small>Saved to {fact.materializedResourceType.replaceAll("_", " ")}</small>}</div><span className={`status ${fact.status}`}>{fact.status.replaceAll("_", " ")}</span></article>)}</div>
       {detail.document.extractedText && <details><summary>Extracted text preview</summary><pre className="extracted-preview">{detail.document.extractedText.slice(0, 5000)}</pre></details>}
-      <div className="dialog-actions"><button className="text-button danger-text" onClick={() => void deleteDocument()}><Trash2 size={16} />Delete document</button><button className="secondary-button compact" onClick={() => void revealOriginal(detail.document.id)}><Download size={16} />Reveal original</button>{detail.document.status === "verified" && <Link className="primary-button compact" href={`/patients/${patientId}`}>View dashboard</Link>}</div>
+      <div className="dialog-actions"><button className="text-button danger-text" onClick={() => void deleteDocument()}><Trash2 size={16} />Delete document</button>{(detail.document.status === "failed" || (detail.document.status === "needs_review" && detail.document.failureReason)) && <button className="primary-button compact" onClick={() => void retryImport()} disabled={uploading}><FileClock size={16} />{uploading ? "Retrying..." : "Retry import"}</button>}<button className="secondary-button compact" onClick={() => void revealOriginal(detail.document.id)}><Download size={16} />Reveal original</button>{detail.document.status === "verified" && <Link className="primary-button compact" href={`/patients/${patientId}`}>View dashboard</Link>}</div>
     </section>}
     {pendingReveal && <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="document-mfa-title"><button className="dialog-close icon-button" aria-label="Close" onClick={() => setPendingReveal(null)}><X /></button><p className="overline">Original document reveal</p><h2 id="document-mfa-title">Confirm recent MFA</h2><p className="muted">The decrypted bytes are released only to this no-store response.</p><form className="stack" onSubmit={stepUp}><label>Authenticator code<input name="code" pattern="[0-9]{6}" inputMode="numeric" autoComplete="one-time-code" required autoFocus /></label><button className="primary-button"><ShieldCheck size={16} />Verify and reveal original</button></form></section></div>}
   </AppShell>;

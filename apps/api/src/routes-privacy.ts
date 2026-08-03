@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -8,6 +8,7 @@ import {
   createAccessGrantSchema,
   createHealthProfileSchema,
   revealRequestSchema,
+  type BoundaryScan,
   type CarePurpose,
   type CareScope,
   type ProtectionStage
@@ -16,9 +17,13 @@ import { assessDiagnosisInstruction, assessEmergency, assessInstructionSafety, a
 import { createGroundedReply, embed, ProviderUnavailableError } from "./ai.js";
 import { hasRecentMfa } from "./auth.js";
 import { audit, one, withUser, type Db } from "./db.js";
+import { evidenceQueue } from "./queue.js";
+import { metricsRegistry, observeEvidenceProbe } from "./metrics.js";
+import { deletePrivateObject, inspectEncryptedObject, putPrivateObject } from "./storage.js";
 import {
   activePurposeGrant,
   issueToolCapability,
+  PrivacyUnavailableError,
   privacyTraceId,
   protectText,
   recordProtectionReceipt,
@@ -103,6 +108,164 @@ const attackScenarios: AttackScenario[] = [
   ].map(([title, input], index) => ({ id: `SALUS-PA-${String(index + 31).padStart(2, "0")}`, category: "boundary_protection", title, description: "Verifies protection postconditions before persistence or provider egress.", boundary: "Protegrity protection", mode: "protection" as const, input }))
 ];
 
+function hashArtifact(value: string | Buffer) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function scanTextArtifact(target: BoundaryScan["target"], artifact: string, traceId: string, prohibitedValues: string[], detail: string): Promise<BoundaryScan> {
+  void traceId;
+  const lowered = artifact.toLocaleLowerCase();
+  const sensitivePatterns = [
+    /\b\d{3}-\d{2}-\d{4}\b/g,
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+    /(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?!\d)/g,
+    /\b(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/g,
+    /\b(?:MRN|medical record)[:#\s-]*[A-Z0-9-]{5,}\b/gi
+  ];
+  const fragments = prohibitedValues.flatMap((value) => sensitivePatterns.flatMap((pattern) => [...value.matchAll(pattern)].map((match) => match[0])));
+  const rawMatchCount = fragments.reduce((count, value) => count + (lowered.includes(value.toLocaleLowerCase()) ? 1 : 0), 0);
+  const canaryMatchCount = prohibitedValues.reduce((count, value) => count + (value && lowered.includes(value.toLocaleLowerCase()) ? 1 : 0), 0);
+  return {
+    target,
+    outcome: rawMatchCount === 0 && canaryMatchCount === 0 ? "passed" : "failed",
+    rawMatchCount,
+    canaryMatchCount,
+    bytesInspected: Buffer.byteLength(artifact),
+    artifactHash: hashArtifact(artifact),
+    detail
+  };
+}
+
+function scanBinaryArtifact(target: BoundaryScan["target"], artifact: Buffer, prohibitedValues: string[], detail: string): BoundaryScan {
+  const canaryMatchCount = prohibitedValues.reduce((count, value) => count + (value && artifact.includes(Buffer.from(value)) ? 1 : 0), 0);
+  return {
+    target,
+    outcome: canaryMatchCount === 0 ? "passed" : "failed",
+    rawMatchCount: 0,
+    canaryMatchCount,
+    bytesInspected: artifact.byteLength,
+    artifactHash: hashArtifact(artifact),
+    detail
+  };
+}
+
+async function runAuthorizationProbe(db: Db, actorId: string, profileId: string, scenarioId: string, traceId: string) {
+  if (scenarioId === "SALUS-PA-29") {
+    const valid = issueToolCapability({ profileId, actorId, purpose: "daily_care", scopes: ["timeline"], traceId });
+    const forged = `${valid.slice(0, -1)}${valid.endsWith("a") ? "b" : "a"}`;
+    return { blocked: !verifyToolCapability(forged, { profileId, actorId, purpose: "daily_care", traceId }, "timeline"), detail: "Cryptographically forged tool capability rejected" };
+  }
+
+  const probeProfileId = randomUUID();
+  await db.query("SAVEPOINT salus_authorization_probe");
+  try {
+    await db.query(`INSERT INTO patients(id,preferred_name,language,timezone,created_by,profile_type,relationship,authority_status,preferred_name_protected,profile_details_protected,identity_fingerprint)
+      VALUES($1,'[PROTECTED TEST PROFILE]','en','America/Chicago',$2,'dependent','synthetic probe','caregiver_attested','[PROTECTED]','[PROTECTED]',$3)`, [probeProfileId, actorId, hashArtifact(probeProfileId)]);
+
+    if (scenarioId !== "SALUS-PA-21") {
+      await db.query("INSERT INTO patient_members(patient_id,user_id,role) VALUES($1,$2,'owner')", [probeProfileId, actorId]);
+      const purposes = scenarioId === "SALUS-PA-24" ? ["medication_support"] : scenarioId === "SALUS-PA-30" ? ["emergency_support"] : ["daily_care"];
+      const scopes = scenarioId === "SALUS-PA-25" || scenarioId === "SALUS-PA-26" ? ["timeline"] : scenarioId === "SALUS-PA-27" || scenarioId === "SALUS-PA-28" || scenarioId === "SALUS-PA-30" ? ["profile"] : ["timeline"];
+      const revealLevel = scenarioId === "SALUS-PA-30" ? "routine" : "sensitive";
+      const validFrom = scenarioId === "SALUS-PA-23" ? new Date(Date.now() - 2 * 86_400_000).toISOString() : new Date().toISOString();
+      const expiresAt = scenarioId === "SALUS-PA-23" ? new Date(Date.now() - 86_400_000).toISOString() : null;
+      const revokedAt = scenarioId === "SALUS-PA-22" ? new Date().toISOString() : null;
+      await db.query(`INSERT INTO access_grants(patient_id,grantee_id,issued_by,purposes,scopes,reveal_level,valid_from,expires_at,revoked_at,revoked_by)
+        VALUES($1,$2,$2,$3,$4,$5,$6,$7,$8,$9)`, [probeProfileId, actorId, purposes, scopes, revealLevel, validFrom, expiresAt, revokedAt, revokedAt ? actorId : null]);
+    }
+
+    let blocked = false;
+    let detail = "Purpose and scope policy rejected the probe";
+    if (scenarioId === "SALUS-PA-21") blocked = !(await one<{ allowed: boolean }>(db, "SELECT is_patient_member($1) AS allowed", [probeProfileId]))?.allowed;
+    else if (scenarioId === "SALUS-PA-22" || scenarioId === "SALUS-PA-23") blocked = !await activePurposeGrant(db, probeProfileId, "daily_care", "timeline");
+    else if (scenarioId === "SALUS-PA-24") blocked = !await activePurposeGrant(db, probeProfileId, "daily_care", "timeline");
+    else if (scenarioId === "SALUS-PA-25") blocked = !await activePurposeGrant(db, probeProfileId, "daily_care", "labs");
+    else if (scenarioId === "SALUS-PA-26") blocked = !await activePurposeGrant(db, probeProfileId, "daily_care", "assistant");
+    else if (scenarioId === "SALUS-PA-27") blocked = !await activePurposeGrant(db, probeProfileId, "records_administration", "export");
+    else if (scenarioId === "SALUS-PA-28") blocked = !await activePurposeGrant(db, probeProfileId, "records_administration", "documents");
+    else if (scenarioId === "SALUS-PA-30") {
+      const emergencyGrant = await one<{ allowed: boolean }>(db, `SELECT EXISTS(SELECT 1 FROM access_grants WHERE patient_id=$1 AND grantee_id=$2 AND revoked_at IS NULL AND 'emergency_support'=ANY(purposes) AND 'profile'=ANY(scopes) AND reveal_level='break_glass') AS allowed`, [probeProfileId, actorId]);
+      blocked = !emergencyGrant?.allowed;
+      detail = "Routine reveal grant could not be escalated to break-glass access";
+    }
+    return { blocked, detail };
+  } finally {
+    await db.query("ROLLBACK TO SAVEPOINT salus_authorization_probe");
+    await db.query("RELEASE SAVEPOINT salus_authorization_probe");
+  }
+}
+
+async function runProtectionProbe(db: Db, actorId: string, profileId: string, scenario: AttackScenario, traceId: string, log: FastifyRequest["log"]) {
+  const protectedValue = await protectText(scenario.input!, traceId, "privacy_attack_test");
+  const protectedValidation = await validateEgress(protectedValue.aiSafeText, traceId, [scenario.input!]);
+  const scans: BoundaryScan[] = [];
+  const targetByScenario: Record<string, BoundaryScan["target"][]> = {
+    "SALUS-PA-31": ["postgresql"],
+    "SALUS-PA-32": ["minio"],
+    "SALUS-PA-33": ["redis"],
+    "SALUS-PA-34": ["pgvector"],
+    "SALUS-PA-35": ["agent_tool"],
+    "SALUS-PA-36": ["structured_logs"],
+    "SALUS-PA-37": ["document_chunks"],
+    "SALUS-PA-38": ["prompt_store"],
+    "SALUS-PA-39": ["telemetry"],
+    "SALUS-PA-40": ["postgresql", "minio", "redis", "agent_tool", "telemetry"]
+  };
+
+  for (const target of targetByScenario[scenario.id] ?? []) {
+    if (target === "minio") {
+      const key = `${profileId}/privacy-probes/${traceId}.bin`;
+      try {
+        await putPrivateObject(key, Buffer.from(scenario.input!), "application/x-salus-privacy-probe");
+        const stored = await inspectEncryptedObject(key);
+        scans.push(scanBinaryArtifact(target, stored.body, [scenario.input!], "Encrypted MinIO object bytes inspected; plaintext existed only before AES-GCM encryption"));
+      } finally { await deletePrivateObject(key).catch(() => undefined); }
+    } else if (target === "redis") {
+      const job = await evidenceQueue.add("protected-boundary-probe", { traceId, profileId, protectedText: protectedValue.aiSafeText, envelopeHash: hashArtifact(protectedValue.canonicalProtected) }, { removeOnComplete: true });
+      try { scans.push(await scanTextArtifact(target, JSON.stringify(job.data), traceId, [scenario.input!], "Actual BullMQ/Redis job payload inspected before removal")); }
+      finally { await job.remove().catch(() => undefined); }
+    } else if (target === "agent_tool") {
+      const capability = issueToolCapability({ profileId, actorId, purpose: "daily_care", scopes: ["timeline"], traceId });
+      const payload = JSON.stringify({ capability, argument: protectedValue.aiSafeText, envelopeHash: hashArtifact(protectedValue.canonicalProtected) });
+      scans.push(await scanTextArtifact(target, payload, traceId, [scenario.input!], "Signed short-lived tool payload inspected before dispatch"));
+    } else if (target === "structured_logs") {
+      const safeLog = { traceId, operation: "privacy_boundary_probe", entityTypes: Object.keys(protectedValue.entityCounts), entityCount: Object.values(protectedValue.entityCounts).reduce((sum, value) => sum + value, 0), fingerprint: protectedValue.fingerprint };
+      const serialized = JSON.stringify(safeLog);
+      scans.push(await scanTextArtifact(target, serialized, traceId, [scenario.input!], "Structured log event contains metadata only"));
+      log.info(safeLog, "privacy boundary probe");
+    } else if (target === "telemetry") {
+      observeEvidenceProbe(target, "passed");
+      const metrics = await metricsRegistry.metrics();
+      scans.push(await scanTextArtifact(target, metrics, traceId, [scenario.input!], "Prometheus exposition inspected; labels contain no patient data"));
+    } else {
+      await db.query("SAVEPOINT salus_persistence_probe");
+      try {
+        let artifact = "";
+        if (target === "postgresql") {
+          const row = await one(db, `INSERT INTO timeline_events(patient_id,occurred_at,category,summary,summary_protected,source,created_by) VALUES($1,now(),'note',$2,$3,'ai',$4) RETURNING summary,summary_protected`, [profileId, protectedValue.aiSafeText, protectedValue.canonicalProtected, actorId]);
+          artifact = JSON.stringify(row);
+        } else if (target === "prompt_store") {
+          const conversation = await one<{ id: string }>(db, `INSERT INTO conversations(patient_id,created_by,kind) VALUES($1,$2,$3) ON CONFLICT(patient_id,kind) DO UPDATE SET kind=EXCLUDED.kind RETURNING id`, [profileId, actorId, `privacy-probe-${traceId}`]);
+          const row = await one(db, `INSERT INTO chat_messages(patient_id,conversation_id,author_id,role,content,content_protected,protection_trace_id,purpose) VALUES($1,$2,$3,'user',$4,$5,$6,'daily_care') RETURNING content,content_protected`, [profileId, conversation!.id, actorId, protectedValue.aiSafeText, protectedValue.canonicalProtected, traceId]);
+          artifact = JSON.stringify(row);
+        } else {
+          const document = await one<{ id: string }>(db, `INSERT INTO documents(patient_id,storage_key,original_filename,original_filename_protected,content_type,byte_size,status,uploaded_by,extracted_text,extracted_text_protected,protection_trace_id) VALUES($1,$2,$3,$4,'text/plain',0,'verified',$5,$3,$4,$6) RETURNING id`, [profileId, `${profileId}/privacy-probes/${traceId}`, protectedValue.aiSafeText, protectedValue.canonicalProtected, actorId, traceId]);
+          const vector = target === "pgvector" ? await embed(protectedValue.aiSafeText, "passage") : null;
+          const row = await one(db, `INSERT INTO document_chunks(patient_id,document_id,content,canonical_protected,embedding) VALUES($1,$2,$3,$4,$5::vector) RETURNING content,canonical_protected,embedding::text AS embedding`, [profileId, document!.id, protectedValue.aiSafeText, protectedValue.canonicalProtected, vector ? `[${vector.join(",")}]` : null]);
+          artifact = JSON.stringify(row);
+        }
+        scans.push(await scanTextArtifact(target, artifact, traceId, [scenario.input!], `Actual ${target} representation written, read back, and inspected inside a rollback-only transaction`));
+      } finally {
+        await db.query("ROLLBACK TO SAVEPOINT salus_persistence_probe");
+        await db.query("RELEASE SAVEPOINT salus_persistence_probe");
+      }
+    }
+  }
+
+  const clean = protectedValidation.safe && scans.length > 0 && scans.every((scan) => scan.outcome === "passed" && scan.rawMatchCount === 0 && scan.canaryMatchCount === 0);
+  return { blocked: clean, scans, protectedValue };
+}
+
 export async function privacyRoutes(app: FastifyInstance) {
   app.post("/v1/patients/:patientId/assistant/messages", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request, reply) => {
     const user = await requireUser(request, reply); if (!user) return;
@@ -135,7 +298,7 @@ export async function privacyRoutes(app: FastifyInstance) {
           { stage: "guardrail_input", outcome: inputGuardrailBlocked ? "blocked" : "passed", durationMs: inputGuardrail.durationMs, detail: `${inputGuardrail.processor}:${inputGuardrail.explanation ?? "approved"}${purposeAllowsGuardrailOfftopic ? ":purpose-approved-care-intent" : ""}` }
         ];
 
-        const respond = async (content: string, model: string, promptVersion: string, receiptStatus: "protected" | "blocked", citations: Array<{ sourceId: string; label: string }> = [], extraStages: ProtectionStage[] = []) => {
+        const respond = async (content: string, model: string, promptVersion: string, receiptStatus: "protected" | "blocked", citations: Array<{ sourceId: string; label: string }> = [], extraStages: ProtectionStage[] = [], boundaryScans: BoundaryScan[] = [], modelProvider?: string) => {
           let protectedOutput = await protectText(content, traceId, body.purpose);
           let outputGuardrail = await scanGuardrail(protectedOutput.aiSafeText, traceId, "output");
           let egress = await validateEgress(protectedOutput.aiSafeText, traceId);
@@ -148,7 +311,9 @@ export async function privacyRoutes(app: FastifyInstance) {
           const assistant = await one(db, `INSERT INTO chat_messages(patient_id,conversation_id,role,content,content_protected,citations,model_version,prompt_version,protection_trace_id,purpose)
             VALUES($1,$2,'assistant',$3,$4,$5,$6,$7,$8,$9) RETURNING id,role,content,citations,created_at AS "createdAt"`, [patientId, conversation!.id, protectedOutput.aiSafeText, protectedOutput.canonicalProtected, JSON.stringify(citations), model, promptVersion, traceId, body.purpose]);
           stages.push(...extraStages, { stage: "guardrail_output", outcome: outputGuardrail.outcome === "approved" ? "passed" : "blocked", durationMs: outputGuardrail.durationMs, detail: outputGuardrail.processor }, { stage: "leak_check", outcome: egress.safe ? "passed" : "blocked", detail: `${egress.discovery.total} raw identifier(s)` });
-          const receipt = await recordProtectionReceipt(db, { traceId, patientId, actorId: user.id, operation: "assistant.message", purpose: body.purpose, status: receiptStatus, stages, entityCounts: protectedInput.entityCounts, provider: protectedInput.provider, rawLeakCount: egress.discovery.total + egress.canaryMatches });
+          const latestProviderScan = [...boundaryScans].reverse().find((scan) => scan.target === "nvidia_payload");
+          const boundaryLeakCount = boundaryScans.filter((scan) => scan.outcome === "failed").reduce((total, scan) => total + scan.rawMatchCount + scan.canaryMatchCount, 0);
+          const receipt = await recordProtectionReceipt(db, { traceId, patientId, actorId: user.id, operation: "assistant.message", purpose: body.purpose, status: receiptStatus, stages, entityCounts: protectedInput.entityCounts, provider: protectedInput.provider, modelProvider, providerPayloadHash: latestProviderScan?.artifactHash, providerPayloadBytes: latestProviderScan?.bytesInspected, providerPayloadStatus: latestProviderScan ? "protected" : "not_called", boundaryScans, rawLeakCount: egress.discovery.total + egress.canaryMatches + boundaryLeakCount });
           await audit(db, user.id, receiptStatus === "blocked" ? "assistant.privacy_blocked" : "assistant.responded", "chat_message", (assistant as { id: string }).id, patientId, { traceId, receiptId: receipt?.id, sourceCount: citations.length, model });
           return { message: assistant, protection: { traceId, receiptId: receipt?.id, status: receiptStatus, inputGuardrail: inputGuardrail.outcome, inputGuardrailPolicy: inputGuardrailBlocked ? "blocked" : "allowed", outputGuardrail: outputGuardrail.outcome, rawLeakCount: egress.discovery.total + egress.canaryMatches } };
         };
@@ -189,8 +354,30 @@ export async function privacyRoutes(app: FastifyInstance) {
         if (unsupportedProtocol) return respond(`Salus does not have a verified definition for ${unsupportedProtocol} in this profile's authorized records, so it cannot apply it.`, "deterministic-evidence-v1", "unsupported-protocol-v1", "blocked");
         if (inputGuardrailBlocked) return respond("This request was blocked by the configured semantic privacy guardrail because it was unsafe or outside the authorized care purpose.", "protegrity-semantic-guardrails", "semantic-guardrail-v1", "blocked");
 
-        const ai = await createGroundedReply(protectedInput.aiSafeText, sources);
-        return respond(ai.answer, ai.model, "salus-protected-assistant-v1", "protected", ai.citations, [{ stage: "model", outcome: "passed", detail: `${ai.provider}:${ai.model}` }]);
+        const providerScans: BoundaryScan[] = [];
+        const ai = await createGroundedReply(protectedInput.aiSafeText, sources, async ({ serialized, model }) => {
+          const payload = JSON.parse(serialized) as { messages?: Array<{ content?: unknown }> };
+          const patientBearingContent = (payload.messages ?? []).map((message) => typeof message.content === "string" ? message.content : "").join("\n");
+          const payloadValidation = await validateEgress(patientBearingContent, traceId);
+          const scan: BoundaryScan = {
+            target: "nvidia_payload",
+            outcome: payloadValidation.safe ? "passed" : "blocked",
+            rawMatchCount: payloadValidation.discovery.total,
+            canaryMatchCount: payloadValidation.canaryMatches,
+            bytesInspected: Buffer.byteLength(serialized),
+            artifactHash: createHash("sha256").update(serialized).digest("hex"),
+            detail: `${model} patient-bearing contents inspected; exact serialized request hashed before provider egress`
+          };
+          providerScans.push(scan);
+          if (!payloadValidation.safe) throw new PrivacyUnavailableError("Provider payload failed the protected-egress inspection; the model was not called.", 422);
+        }, async (prompt) => {
+          const protectedPrompt = await protectText(prompt, traceId, body.purpose);
+          const promptValidation = await validateEgress(protectedPrompt.aiSafeText, traceId);
+          stages.push({ stage: "protect", outcome: promptValidation.safe ? "passed" : "blocked", durationMs: protectedPrompt.durationMs, detail: "complete minimum-necessary model prompt protected and rescanned" });
+          if (!promptValidation.safe) throw new PrivacyUnavailableError("The complete model prompt failed the post-protection inspection; the model was not called.", 422);
+          return protectedPrompt.aiSafeText;
+        });
+        return respond(ai.answer, ai.model, "salus-protected-assistant-v1", "protected", ai.citations, [{ stage: "model", outcome: "passed", detail: `${ai.provider}:${ai.model}; protected payload inspected before call` }], providerScans, ai.provider);
       });
     } catch (error) {
       if (error instanceof ProviderUnavailableError) return reply.code(503).send({ code: "AI_UNAVAILABLE", message: error.message });
@@ -331,8 +518,8 @@ export async function privacyRoutes(app: FastifyInstance) {
     const { profileId } = profileParams.parse(request.params);
     return withUser(user.id, async (db) => {
       if (!await requirePatientRole(db, profileId)) return reply.code(404).send({ code: "PROFILE_NOT_FOUND" });
-      const summary = await one(db, `SELECT count(*)::int AS "totalReceipts",count(*) FILTER(WHERE status='blocked')::int AS "blockedOperations",count(*) FILTER(WHERE raw_leak_count>0)::int AS "leakEvents",COALESCE(sum(jsonb_array_length(stages)),0)::int AS "verifiedStages" FROM protection_receipts WHERE patient_id=$1`, [profileId]);
-      const recent = await db.query(`SELECT id,trace_id AS "traceId",operation,purpose,status,stages,entity_counts AS "entityCounts",provider,raw_leak_count AS "rawLeakCount",event_hash AS "eventHash",created_at AS "createdAt" FROM protection_receipts WHERE patient_id=$1 ORDER BY created_at DESC LIMIT 50`, [profileId]);
+      const summary = await one(db, `SELECT count(*)::int AS "totalReceipts",count(*) FILTER(WHERE status='blocked')::int AS "blockedOperations",count(*) FILTER(WHERE raw_leak_count>0)::int AS "leakEvents",COALESCE(sum(jsonb_array_length(stages)),0)::int AS "verifiedStages",COALESCE(sum(jsonb_array_length(boundary_scans)),0)::int AS "destinationScans" FROM protection_receipts WHERE patient_id=$1`, [profileId]);
+      const recent = await db.query(`SELECT id,trace_id AS "traceId",operation,purpose,status,stages,entity_counts AS "entityCounts",provider,model_provider AS "modelProvider",provider_payload_hash AS "providerPayloadHash",provider_payload_bytes AS "providerPayloadBytes",provider_payload_status AS "providerPayloadStatus",boundary_scans AS "boundaryScans",raw_leak_count AS "rawLeakCount",event_hash AS "eventHash",created_at AS "createdAt" FROM protection_receipts WHERE patient_id=$1 ORDER BY created_at DESC LIMIT 50`, [profileId]);
       const attacks = await db.query(`SELECT id,scenario_id AS "scenarioId",category,outcome,boundary,trace_id AS "traceId",created_at AS "createdAt" FROM privacy_attack_runs WHERE patient_id=$1 ORDER BY created_at DESC LIMIT 30`, [profileId]);
       return { summary, recent: recent.rows, attacks: attacks.rows };
     });
@@ -353,30 +540,39 @@ export async function privacyRoutes(app: FastifyInstance) {
     return withUser(user.id, async (db) => {
       if (!await requirePatientRole(db, profileId)) return reply.code(404).send({ code: "PROFILE_NOT_FOUND" });
       let blocked = false;
+      let boundaryScans: BoundaryScan[] = [];
+      let entityCounts: Record<string, number> = {};
       const stages: ProtectionStage[] = [{ stage: "authorize", outcome: "passed" }];
       if (scenario.mode === "purpose") {
-        blocked = !await activePurposeGrant(db, randomUUID(), "daily_care", "profile");
-        stages.push({ stage: "authorize", outcome: blocked ? "blocked" : "failed", detail: scenario.boundary });
+        const result = await runAuthorizationProbe(db, user.id, profileId, scenario.id, traceId);
+        blocked = result.blocked;
+        stages.push({ stage: "authorize", outcome: blocked ? "blocked" : "failed", detail: result.detail });
       } else if (scenario.mode === "output_leak") {
         const result = await validateEgress(scenario.input!, traceId, scenario.id === "SALUS-PA-20" ? ["SALUS-CANARY-DO-NOT-RELEASE"] : []);
         blocked = !result.safe;
         stages.push({ stage: "leak_check", outcome: blocked ? "blocked" : "failed", detail: scenario.boundary });
+        boundaryScans = [{ target: "nvidia_payload", outcome: blocked ? "blocked" : "failed", rawMatchCount: result.discovery.total, canaryMatchCount: result.canaryMatches, bytesInspected: Buffer.byteLength(scenario.input!), artifactHash: hashArtifact(scenario.input!), detail: "Synthetic hostile model/tool output inspected at the real release boundary" }];
       } else {
-        const protectedValue = await protectText(scenario.input!, traceId, "privacy_attack_test");
-        stages.push({ stage: "discover", outcome: "passed" }, { stage: "protect", outcome: "passed", durationMs: protectedValue.durationMs });
         if (scenario.mode === "input_guardrail") {
+          const protectedValue = await protectText(scenario.input!, traceId, "privacy_attack_test");
+          entityCounts = protectedValue.entityCounts;
+          stages.push({ stage: "discover", outcome: "passed" }, { stage: "protect", outcome: "passed", durationMs: protectedValue.durationMs });
           const result = await scanGuardrail(protectedValue.aiSafeText, traceId, "input");
           blocked = result.outcome === "rejected";
           stages.push({ stage: "guardrail_input", outcome: blocked ? "blocked" : "failed", durationMs: result.durationMs, detail: scenario.boundary });
         } else {
-          const result = await validateEgress(protectedValue.aiSafeText, traceId);
-          blocked = result.safe;
-          stages.push({ stage: "leak_check", outcome: blocked ? "passed" : "failed", detail: "No identifier remained after protection" });
+          const result = await runProtectionProbe(db, user.id, profileId, scenario, traceId, request.log);
+          blocked = result.blocked;
+          boundaryScans = result.scans;
+          entityCounts = result.protectedValue.entityCounts;
+          stages.push({ stage: "discover", outcome: "passed" }, { stage: "protect", outcome: "passed", durationMs: result.protectedValue.durationMs }, { stage: "persist", outcome: blocked ? "blocked" : "failed", detail: `${boundaryScans.length} destination representation(s) inspected` }, { stage: "leak_check", outcome: blocked ? "passed" : "failed", detail: "No raw identifier or prohibited canary reached the destination" });
         }
       }
-      const receipt = await recordProtectionReceipt(db, { traceId, patientId: profileId, actorId: user.id, operation: `attack.${scenario.id}`, purpose: "privacy_attack_test", status: blocked ? "blocked" : "failed", stages, rawLeakCount: 0 });
+      const rawLeakCount = boundaryScans.filter((scan) => scan.outcome === "failed").reduce((total, scan) => total + scan.rawMatchCount + scan.canaryMatchCount, 0);
+      const receipt = await recordProtectionReceipt(db, { traceId, patientId: profileId, actorId: user.id, operation: `attack.${scenario.id}`, purpose: "privacy_attack_test", status: blocked ? "blocked" : "failed", stages, entityCounts, boundaryScans, providerPayloadHash: boundaryScans.find((scan) => scan.target === "nvidia_payload")?.artifactHash, providerPayloadBytes: boundaryScans.find((scan) => scan.target === "nvidia_payload")?.bytesInspected, providerPayloadStatus: boundaryScans.some((scan) => scan.target === "nvidia_payload") ? (blocked ? "blocked" : "protected") : "not_called", rawLeakCount });
       const run = await one(db, `INSERT INTO privacy_attack_runs(patient_id,actor_id,scenario_id,category,outcome,boundary,trace_id,receipt_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,scenario_id AS "scenarioId",category,outcome,boundary,trace_id AS "traceId",created_at AS "createdAt"`, [profileId, user.id, scenario.id, scenario.category, blocked ? "blocked" : "failed", scenario.boundary, traceId, receipt?.id ?? null]);
+      await audit(db, user.id, "privacy_attack.executed", "privacy_attack", (run as { id: string }).id, profileId, { scenarioId: scenario.id, outcome: blocked ? "blocked" : "failed", boundary: scenario.boundary, traceId, destinationScans: boundaryScans.map((scan) => scan.target) });
       return { ...run, title: scenario.title };
     });
   });

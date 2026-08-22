@@ -7,7 +7,7 @@ import { audit, one, withUser, type Db } from "./db.js";
 import { requirePatientRole, requireUser } from "./request.js";
 import { createGroundedReply, embed, ProviderUnavailableError } from "./ai.js";
 import { deletePrivateObject, getPrivateObject, putPrivateObject } from "./storage.js";
-import { enqueueDocument, enqueueVoice } from "./queue.js";
+import { enqueueDocument, enqueueVoice, retryDocument } from "./queue.js";
 import { scanForMalware } from "./clamav.js";
 import { hasRecentMfa, hashAuthToken } from "./auth.js";
 import { env } from "./env.js";
@@ -186,6 +186,19 @@ export async function patientRoutes(app: FastifyInstance) {
     });
   });
 
+  app.delete("/v1/patients/:patientId/timeline/:eventId", async (request, reply) => {
+    const user = await requireUser(request, reply); if (!user) return;
+    const params = patientParams.extend({ eventId: z.string().uuid() }).parse(request.params);
+    return withUser(user.id, async (db) => {
+      const role = await requirePatientRole(db, params.patientId); if (!role || !can(role, "write")) return reply.code(role ? 403 : 404).send({ code: role ? "FORBIDDEN" : "PATIENT_NOT_FOUND" });
+      if (!await requirePurposeScope(db, reply, params.patientId, "daily_care", "timeline")) return;
+      const event = await one<{ id: string }>(db, "UPDATE timeline_events SET superseded_at=now() WHERE id=$1 AND patient_id=$2 AND superseded_at IS NULL RETURNING id", [params.eventId, params.patientId]);
+      if (!event) return reply.code(404).send({ code: "TIMELINE_EVENT_NOT_FOUND" });
+      await audit(db, user.id, "timeline_event.removed", "timeline_event", params.eventId, params.patientId);
+      return reply.code(204).send();
+    });
+  });
+
   app.post("/v1/patients/:patientId/medications", async (request, reply) => {
     const user = await requireUser(request, reply); if (!user) return;
     const { patientId } = patientParams.parse(request.params); const body = medicationSchema.parse(request.body);
@@ -330,7 +343,7 @@ export async function patientRoutes(app: FastifyInstance) {
   app.post("/v1/patients/:patientId/voice", async (request, reply) => {
     const user = await requireUser(request, reply); if (!user) return;
     const { patientId } = patientParams.parse(request.params);
-    return withUser(user.id, async (db) => {
+    const pending = await withUser(user.id, async (db) => {
       const role = await requirePatientRole(db, patientId); if (!role || !can(role, "write")) return reply.code(role ? 403 : 404).send({ code: role ? "FORBIDDEN" : "PATIENT_NOT_FOUND" });
       if (!await requirePurposeScope(db, reply, patientId, "daily_care", "assistant")) return;
       const file = await request.file({ limits: { fileSize: 20 * 1024 * 1024, files: 1 } });
@@ -340,13 +353,21 @@ export async function patientRoutes(app: FastifyInstance) {
       await putPrivateObject(key, buffer, file.mimetype);
       try {
         await db.query("INSERT INTO voice_events(id,patient_id,storage_key,content_type,created_by) VALUES($1,$2,$3,$4,$5)", [id, patientId, key, file.mimetype, user.id]);
-        await enqueueVoice(id, patientId, user.id);
       } catch (error) {
         await deletePrivateObject(key).catch(() => undefined);
         throw error;
       }
-      return reply.code(202).send({ id, status: "processing" });
+      await audit(db, user.id, "voice.uploaded", "voice_event", id, patientId, { contentType: file.mimetype, rawAudioExternalProviderPayload: false });
+      return { id, key };
     });
+    if (!pending || !("id" in pending)) return;
+    try { await enqueueVoice(pending.id, patientId, user.id); }
+    catch (error) {
+      await deletePrivateObject(pending.key).catch(() => undefined);
+      await withUser(user.id, async (db) => db.query("DELETE FROM voice_events WHERE id=$1 AND patient_id=$2", [pending.id, patientId]));
+      throw error;
+    }
+    return reply.code(202).send({ id: pending.id, status: "processing" });
   });
 
   app.get("/v1/patients/:patientId/assistant/messages", async (request, reply) => {
@@ -575,6 +596,16 @@ export async function patientRoutes(app: FastifyInstance) {
     });
   });
 
+  app.get("/v1/patients/:patientId/voice/pending", async (request, reply) => {
+    const user = await requireUser(request, reply); if (!user) return;
+    const { patientId } = patientParams.parse(request.params);
+    return withUser(user.id, async (db) => {
+      if (!await requirePatientRole(db, patientId)) return reply.code(404).send({ code: "PATIENT_NOT_FOUND" });
+      if (!await requirePurposeScope(db, reply, patientId, "daily_care", "assistant")) return;
+      return (await db.query(`SELECT id,status,original_transcript AS "originalTranscript",edited_transcript AS "editedTranscript",confidence,structured_result AS "structuredResult",created_at AS "createdAt" FROM voice_events WHERE patient_id=$1 AND status IN ('needs_review','failed') ORDER BY created_at DESC LIMIT 10`, [patientId])).rows;
+    });
+  });
+
   app.get("/v1/patients/:patientId/voice/:voiceId", async (request, reply) => {
     const user = await requireUser(request, reply); if (!user) return;
     const params = patientParams.extend({ voiceId: z.string().uuid() }).parse(request.params);
@@ -586,21 +617,60 @@ export async function patientRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/v1/patients/:patientId/voice/:voiceId/confirm", async (request, reply) => {
+  app.post("/v1/patients/:patientId/voice/:voiceId/consume", async (request, reply) => {
     const user = await requireUser(request, reply); if (!user) return;
     const params = patientParams.extend({ voiceId: z.string().uuid() }).parse(request.params);
-    const body = z.object({ editedTranscript: z.string().min(1).max(12000), category: createTimelineEventSchema.shape.category, occurredAt: z.string().datetime() }).parse(request.body);
     return withUser(user.id, async (db) => {
       const role = await requirePatientRole(db, params.patientId); if (!role || !can(role, "write")) return reply.code(role ? 403 : 404).send({ code: role ? "FORBIDDEN" : "PATIENT_NOT_FOUND" });
       if (!await requirePurposeScope(db, reply, params.patientId, "daily_care", "assistant")) return;
-      if (!await requirePurposeScope(db, reply, params.patientId, "daily_care", "timeline")) return;
-      const traceId = privacyTraceId();
-      const protectedTranscript = await protectText(body.editedTranscript, traceId, "daily_care");
-      const voice = await one(db, `UPDATE voice_events SET status='confirmed',edited_transcript=$1,edited_transcript_protected=$2,structured_result=$3 WHERE id=$4 AND patient_id=$5 AND status='needs_review' RETURNING id`, [protectedTranscript.aiSafeText, protectedTranscript.canonicalProtected, JSON.stringify({ category: body.category, occurredAt: body.occurredAt }), params.voiceId, params.patientId]);
+      const voice = await one<{ id: string; storage_key: string }>(db, "SELECT id,storage_key FROM voice_events WHERE id=$1 AND patient_id=$2 AND status='needs_review' FOR UPDATE", [params.voiceId, params.patientId]);
       if (!voice) return reply.code(409).send({ code: "VOICE_NOT_REVIEWABLE" });
-      const event = await one(db, `INSERT INTO timeline_events(patient_id,occurred_at,category,summary,summary_protected,source,created_by) VALUES($1,$2,$3,$4,$5,'voice',$6) RETURNING id`, [params.patientId, body.occurredAt, body.category, protectedTranscript.aiSafeText, protectedTranscript.canonicalProtected, user.id]);
-      await recordProtectionReceipt(db, { traceId, patientId: params.patientId, actorId: user.id, operation: "voice.confirm", purpose: "daily_care", status: "protected", provider: protectedTranscript.provider, entityCounts: protectedTranscript.entityCounts, stages: [{ stage: "authorize", outcome: "passed" }, { stage: "discover", outcome: "passed" }, { stage: "protect", outcome: "passed" }, { stage: "persist", outcome: "passed", detail: "protected transcript and AI-safe timeline view" }] });
-      await audit(db, user.id, "voice.confirmed", "voice_event", params.voiceId, params.patientId, { timelineEventId: (event as { id: string }).id, traceId }); return { voiceId: params.voiceId, timelineEventId: (event as { id: string }).id, protectionTraceId: traceId };
+      await deletePrivateObject(voice.storage_key);
+      await db.query(`UPDATE voice_events SET status='confirmed',structured_result=COALESCE(structured_result,'{}'::jsonb)||$1::jsonb WHERE id=$2 AND patient_id=$3`, [JSON.stringify({ use: "assistant_query", rawAudioDeleted: true, timelineWrite: false }), params.voiceId, params.patientId]);
+      await audit(db, user.id, "voice.consumed_as_assistant_query", "voice_event", params.voiceId, params.patientId, { rawAudioDeleted: true, timelineWrite: false });
+      return { voiceId: params.voiceId, status: "confirmed", rawAudioDeleted: true, timelineWrite: false };
+    });
+  });
+
+  app.delete("/v1/patients/:patientId/voice/:voiceId", async (request, reply) => {
+    const user = await requireUser(request, reply); if (!user) return;
+    const params = patientParams.extend({ voiceId: z.string().uuid() }).parse(request.params);
+    return withUser(user.id, async (db) => {
+      const role = await requirePatientRole(db, params.patientId); if (!role || !can(role, "write")) return reply.code(role ? 403 : 404).send({ code: role ? "FORBIDDEN" : "PATIENT_NOT_FOUND" });
+      if (!await requirePurposeScope(db, reply, params.patientId, "daily_care", "assistant")) return;
+      const voice = await one<{ id: string; storage_key: string }>(db, "SELECT id,storage_key FROM voice_events WHERE id=$1 AND patient_id=$2 FOR UPDATE", [params.voiceId, params.patientId]);
+      if (!voice) return reply.code(404).send({ code: "VOICE_NOT_FOUND" });
+      await deletePrivateObject(voice.storage_key);
+      await db.query("DELETE FROM voice_events WHERE id=$1 AND patient_id=$2", [params.voiceId, params.patientId]);
+      await audit(db, user.id, "voice.deleted", "voice_event", params.voiceId, params.patientId, { rawAudioDeleted: true });
+      return reply.code(204).send();
+    });
+  });
+
+  app.post("/v1/patients/:patientId/voice/:voiceId/confirm", async (request, reply) => {
+    const user = await requireUser(request, reply); if (!user) return;
+    patientParams.extend({ voiceId: z.string().uuid() }).parse(request.params);
+    return reply.code(410).send({ code: "VOICE_TIMELINE_DISABLED", message: "Ask Salus voice input no longer creates timeline events. Submit the reviewed transcript as an assistant question." });
+  });
+
+  app.post("/v1/patients/:patientId/documents/:documentId/retry", async (request, reply) => {
+    const user = await requireUser(request, reply); if (!user) return;
+    const params = patientParams.extend({ documentId: z.string().uuid() }).parse(request.params);
+    return withUser(user.id, async (db) => {
+      const role = await requirePatientRole(db, params.patientId); if (!role || !can(role, "write")) return reply.code(role ? 403 : 404).send({ code: role ? "FORBIDDEN" : "PATIENT_NOT_FOUND" });
+      if (!await requirePurposeScope(db, reply, params.patientId, "records_administration", "documents")) return;
+      const document = await one<{ id: string; status: string }>(db, "SELECT id,status FROM documents WHERE id=$1 AND patient_id=$2 AND status<>'deleted' FOR UPDATE", [params.documentId, params.patientId]);
+      if (!document) return reply.code(404).send({ code: "DOCUMENT_NOT_FOUND" });
+      const retryable = document.status === "failed" || document.status === "needs_review";
+      if (!retryable) return reply.code(409).send({ code: "DOCUMENT_NOT_RETRYABLE", message: "Only a failed or safely blocked document import can be retried." });
+      await db.query("UPDATE documents SET status='processing',failure_reason=NULL,updated_at=now() WHERE id=$1 AND patient_id=$2", [params.documentId, params.patientId]);
+      try { await retryDocument(params.documentId, params.patientId, user.id); }
+      catch (error) {
+        await db.query("UPDATE documents SET status='failed',failure_reason=$1,updated_at=now() WHERE id=$2 AND patient_id=$3", [error instanceof Error ? error.message.slice(0, 500) : "Retry could not be queued.", params.documentId, params.patientId]);
+        throw error;
+      }
+      await audit(db, user.id, "document.retry_queued", "document", params.documentId, params.patientId);
+      return reply.code(202).send({ id: params.documentId, status: "processing" });
     });
   });
 

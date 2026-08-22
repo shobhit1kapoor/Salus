@@ -42,6 +42,14 @@ export async function getPrivateObject(key: string) {
   if (encryptionKey.length !== 32) throw new Error("Protegrity returned an invalid object data key");
   return decrypt(Buffer.from(await response.Body!.transformToByteArray()), encryptionKey);
 }
+export async function inspectEncryptedObject(key: string) {
+  const response = await client.send(new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }));
+  return {
+    body: Buffer.from(await response.Body!.transformToByteArray()),
+    metadata: response.Metadata ?? {},
+    contentType: response.ContentType ?? "application/octet-stream"
+  };
+}
 export async function deletePrivateObject(key: string) {
   await client.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: key }));
 }

@@ -60,6 +60,17 @@ export const protectionStageSchema = z.object({
 });
 export type ProtectionStage = z.infer<typeof protectionStageSchema>;
 
+export const boundaryScanSchema = z.object({
+  target: z.enum(["postgresql", "minio", "redis", "pgvector", "agent_tool", "structured_logs", "document_chunks", "prompt_store", "telemetry", "nvidia_payload"]),
+  outcome: z.enum(["passed", "blocked", "failed"]),
+  rawMatchCount: z.number().int().nonnegative(),
+  canaryMatchCount: z.number().int().nonnegative(),
+  bytesInspected: z.number().int().nonnegative(),
+  artifactHash: z.string().regex(/^[a-f0-9]{64}$/),
+  detail: z.string().max(240)
+});
+export type BoundaryScan = z.infer<typeof boundaryScanSchema>;
+
 export const protectionReceiptSchema = z.object({
   id: z.string().uuid(),
   traceId: z.string().uuid(),
@@ -69,6 +80,11 @@ export const protectionReceiptSchema = z.object({
   stages: z.array(protectionStageSchema),
   entityCounts: z.record(z.number().int().nonnegative()),
   provider: z.string(),
+  modelProvider: z.string().nullable().optional(),
+  providerPayloadHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  providerPayloadBytes: z.number().int().nonnegative().nullable().optional(),
+  providerPayloadStatus: z.enum(["protected", "blocked", "not_called"]).nullable().optional(),
+  boundaryScans: z.array(boundaryScanSchema).default([]),
   rawLeakCount: z.number().int().nonnegative(),
   eventHash: z.string(),
   createdAt: z.string().datetime()

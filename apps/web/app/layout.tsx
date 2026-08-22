@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"),
-  title: { default: "Salus", template: "%s · Salus" },
+  title: { default: "Salus — Privacy-First Health AI", template: "%s · Salus" },
   description: "Protected health intelligence for patients and authorized caregivers.",
   applicationName: "Salus",
   manifest: "/manifest.webmanifest",

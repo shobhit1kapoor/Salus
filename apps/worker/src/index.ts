@@ -9,7 +9,7 @@ import { audit, withUser } from "../../api/src/db.js";
 import { sendMail } from "../../api/src/mail.js";
 import { privacyTraceId, protectText, recordProtectionReceipt, unprotectText } from "../../api/src/privacy.js";
 import webpush from "web-push";
-import { documentAppointmentFactSchema, documentMedicationFactSchema, documentTaskFactSchema, documentTimelineFactSchema, extractDocumentFactProposals, extractDocumentPatientIdentity } from "@salus/contracts";
+import { documentAppointmentFactSchema, documentMedicationFactSchema, documentPatientIdentityFactSchema, documentTaskFactSchema, documentTimelineFactSchema, extractDocumentFactProposals, extractDocumentPatientIdentity } from "@salus/contracts";
 
 const pushConfigured = Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY);
 if (pushConfigured) webpush.setVapidDetails(env.VAPID_SUBJECT, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!);
@@ -29,12 +29,19 @@ async function extractText(buffer: Buffer, contentType: string) {
 }
 
 async function processDocument(data: CareJob) {
-  const metadata = await withUser(data.actorId, async (db) => (await db.query<{ storage_key: string; content_type: string; timezone: string; preferred_name: string; legal_name: string | null; date_of_birth: string | Date | null }>("SELECT d.storage_key,d.content_type,p.timezone,p.preferred_name,p.legal_name,p.date_of_birth FROM documents d JOIN patients p ON p.id=d.patient_id WHERE d.id=$1 AND d.patient_id=$2", [data.documentId, data.patientId])).rows[0]);
+  const metadata = await withUser(data.actorId, async (db) => (await db.query<{ storage_key: string; content_type: string; timezone: string; preferred_name: string; identity_fingerprint: string | null }>("SELECT d.storage_key,d.content_type,p.timezone,p.preferred_name,p.identity_fingerprint FROM documents d JOIN patients p ON p.id=d.patient_id WHERE d.id=$1 AND d.patient_id=$2", [data.documentId, data.patientId])).rows[0]);
   if (!metadata) throw new Error("Document is unavailable or authorization was revoked");
   const buffer = await getPrivateObject(metadata.storage_key);
   const text = (await extractText(buffer, metadata.content_type)).replace(/\0/g, "").trim();
   if (!text) throw new Error("No readable text was extracted");
   const traceId = privacyTraceId();
+  // Resolve identity inside the trusted extraction boundary. Only a protected
+  // label and the equality decision are persisted; the raw document name is not.
+  const rawIdentity = extractDocumentPatientIdentity(text, { preferredName: "__salus_identity_probe__" });
+  const rawDocumentName = rawIdentity?.proposedValue.documentName;
+  const protectedIdentity = typeof rawDocumentName === "string"
+    ? await protectText(rawDocumentName, traceId, "records_administration")
+    : null;
   // Extraction occurs in memory. The first durable or provider-facing representation
   // is produced by the Protegrity boundary and is safe for semantic processing.
   const protectedDocument = await protectText(text.slice(0, 2_000_000), traceId, "records_administration");
@@ -56,8 +63,25 @@ async function processDocument(data: CareJob) {
     const firstChunkId = insertedChunks[0]?.id;
     if (!firstChunkId) throw new Error("Document chunking produced no reviewable content");
     const verifiedMedications = await db.query<{ id: string; name: string; dosage: string }>("SELECT id,name,dosage FROM medications WHERE patient_id=$1 AND status='verified'", [data.patientId]);
-    const identity = extractDocumentPatientIdentity(semanticText, { preferredName: metadata.preferred_name, legalName: metadata.legal_name, dateOfBirth: metadata.date_of_birth });
-    const proposals = [...(identity ? [identity] : []), ...extractDocumentFactProposals(semanticText, metadata.timezone)];
+    const semanticIdentity = extractDocumentPatientIdentity(semanticText, { preferredName: "__salus_identity_probe__" });
+    const identity = protectedIdentity ? {
+      field: "patient_identity" as const,
+      proposedValue: documentPatientIdentityFactSchema.parse({
+        documentName: "Protected document identity",
+        expectedName: "Protected profile identity",
+        match: Boolean(metadata.identity_fingerprint && protectedIdentity.fingerprint === metadata.identity_fingerprint),
+        ...(!(metadata.identity_fingerprint && protectedIdentity.fingerprint === metadata.identity_fingerprint) ? { conflict: { type: "patient_identity_mismatch" as const } } : {}),
+      }),
+      sourceText: semanticIdentity?.sourceText ?? semanticText.slice(0, 200),
+    } : undefined;
+    const semanticProposals = extractDocumentFactProposals(semanticText, metadata.timezone)
+      .filter((proposal) => proposal.field === "document_type" || proposal.field === "document_summary");
+    const minimumNecessaryClinicalProposals = extractDocumentFactProposals(text, metadata.timezone)
+      .filter((proposal) => proposal.field !== "document_type" && proposal.field !== "document_summary");
+    // Structured clinical facts are derived in memory, detached from raw patient
+    // identifiers, and joined only to the protected profile ID. The free-text
+    // summary and retrieval chunks always come from the protected semantic view.
+    const proposals = [...(identity ? [identity] : []), ...semanticProposals, ...minimumNecessaryClinicalProposals];
     const insertedFacts: Array<{ id: string; field: string; proposedValue: Record<string, unknown> }> = [];
     for (const proposal of proposals) {
       let proposedValue = proposal.proposedValue;

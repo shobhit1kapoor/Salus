@@ -135,8 +135,8 @@ def _fingerprint(value: str) -> str:
 
 def _alpha_pseudonym(value: str) -> str:
     hexadecimal = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-    letters = hexadecimal.translate(str.maketrans("0123456789abcdef", "abcdefghijklmnop"))
-    return "_".join(letters[index : index + 4] for index in range(0, len(letters), 4))
+    letters = hexadecimal.translate(str.maketrans("0123456789abcdef", "ABCDEFGHIJKLMNOP"))
+    return "-".join(letters)
 
 
 def _test_fernet() -> Fernet:
@@ -167,6 +167,35 @@ def _test_discover(text: str) -> dict[str, list[dict[str, Any]]]:
 def _discovery_summary(classifications: dict[str, list[dict[str, Any]]]) -> DiscoveryResult:
     counts = {entity: len(items) for entity, items in classifications.items() if items}
     return DiscoveryResult(entityCounts=counts, total=sum(counts.values()))
+
+
+def _merge_deterministic_healthcare_patterns(
+    classifications: dict[str, list[dict[str, Any]]], text: str
+) -> dict[str, list[dict[str, Any]]]:
+    """Close documented classifier gaps without replacing Protegrity discovery.
+
+    Protegrity remains the primary classifier. Exact high-risk healthcare patterns
+    are added only when their span was not already identified, and the resulting
+    spans are protected by the same Protegrity-wrapped trace boundary.
+    """
+    merged = {entity: list(items) for entity, items in classifications.items()}
+    occupied: list[tuple[int, int]] = []
+    for items in merged.values():
+        for item in items:
+            location = item.get("location", {})
+            try:
+                occupied.append((int(location["start_index"]), int(location["end_index"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    for entity, items in _test_discover(text).items():
+        for item in items:
+            location = item["location"]
+            start, end = int(location["start_index"]), int(location["end_index"])
+            if any(start < existing_end and end > existing_start for existing_start, existing_end in occupied):
+                continue
+            merged.setdefault(entity, []).append(item)
+            occupied.append((start, end))
+    return merged
 
 
 def _protegrity_module():
@@ -229,7 +258,36 @@ def _discover(text: str) -> dict[str, list[dict[str, Any]]]:
     if MODE == "test":
         return _test_discover(text)
     try:
-        return _protegrity_module().discover(text)
+        module = _protegrity_module()
+        chunk_size = 8_000
+        overlap = 256
+        if len(text) <= chunk_size:
+            discovered = module.discover(text)
+        else:
+            discovered: dict[str, list[dict[str, Any]]] = {}
+            seen: set[tuple[str, int, int]] = set()
+            start = 0
+            while start < len(text):
+                end = min(len(text), start + chunk_size)
+                chunk = text[start:end]
+                for entity, items in module.discover(chunk).items():
+                    for item in items:
+                        adjusted = dict(item)
+                        location = dict(item["location"])
+                        absolute_start = start + int(location["start_index"])
+                        absolute_end = start + int(location["end_index"])
+                        identity = (entity, absolute_start, absolute_end)
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        location["start_index"] = absolute_start
+                        location["end_index"] = absolute_end
+                        adjusted["location"] = location
+                        discovered.setdefault(entity, []).append(adjusted)
+                if end == len(text):
+                    break
+                start = end - overlap
+        return _merge_deterministic_healthcare_patterns(discovered, text)
     except HTTPException:
         raise
     except Exception as exc:
@@ -246,7 +304,7 @@ def _test_protect_entities(text: str, classifications: dict[str, list[dict[str, 
         raw = text[start:end]
         protected_value = hmac.new(TEST_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()
         token = _alpha_pseudonym(protected_value)
-        text = f"{text[:start]}[ENTITY:{token}]{text[end:]}"
+        text = f"{text[:start]}[PROTECTED {token}]{text[end:]}"
     return text
 
 
@@ -279,7 +337,7 @@ def _protegrity_pseudonymize_entities(
     for start, end, _entity in sorted(selected, reverse=True):
         protected_value = hmac.new(trace_key, text[start:end].encode("utf-8"), hashlib.sha256).hexdigest()
         pseudonym = _alpha_pseudonym(protected_value)
-        text = f"{text[:start]}[ENTITY:{pseudonym}]{text[end:]}"
+        text = f"{text[:start]}[PROTECTED {pseudonym}]{text[end:]}"
     return text
 
 

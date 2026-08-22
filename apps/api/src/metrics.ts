@@ -18,8 +18,19 @@ const duration = new Histogram({
   registers: [metricsRegistry]
 });
 
+const evidenceProbes = new Counter({
+  name: "salus_privacy_boundary_probes_total",
+  help: "Synthetic privacy boundary probes executed without payload labels.",
+  labelNames: ["target", "outcome"] as const,
+  registers: [metricsRegistry]
+});
+
 export function observeRequest(method: string, route: string, statusCode: number, elapsedMilliseconds: number) {
   const labels = { method, route, status_code: String(statusCode) };
   requests.inc(labels);
   duration.observe(labels, elapsedMilliseconds / 1000);
+}
+
+export function observeEvidenceProbe(target: string, outcome: "passed" | "blocked" | "failed") {
+  evidenceProbes.inc({ target, outcome });
 }

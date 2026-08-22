@@ -1,47 +1,41 @@
-# Salus visual redesign QA
+# Salus landing page design QA
 
-- Source visual truth: `.codex-audit/acl-reference-dashboard.png`
-- Implementation evidence: `.codex-audit/salus-redesign-dashboard.png`
-- Reference pixels: 1265 x 712
-- Implementation pixels: 1258 x 803
-- CSS viewport: desktop application viewport at browser default scale; mobile breakpoint separately checked at a requested 390 x 844 viewport (reported CSS viewport 487 x 1055 because of host display scaling)
-- State: ACL dashboard reference compared with an authenticated Salus patient dashboard containing synthetic care data
-- Density normalization: both browser captures used the same in-app browser and host display density; composition was judged by the shared application content region rather than differing page height
+## Review target
 
-## Full-view comparison evidence
-
-The implementation preserves Salus's existing top bar, sidebar, routes, patient context, and care-dashboard layout. It adopts the reference's pale sage canvas, white fixed navigation surface, near-black active navigation, rounded white cards, pill actions, restrained shadows, uppercase section labels, and vivid accent treatment. The differing page content and top-bar structure are intentional product constraints from the request not to change the Salus layout.
-
-## Focused region comparison evidence
-
-The sidebar and first dashboard viewport were reviewed at readable scale. Active navigation, brand treatment, page heading, assistant callout, care cards, badges, buttons, icon containers, and status surfaces share consistent spacing and token use. No raster imagery was required by either Salus screen; existing Lucide interface icons remain appropriate and consistent.
-
-## Required fidelity surfaces
-
-- Fonts and typography: passed. Inter remains the UI face, with a serif brand wordmark echoing the source. Hierarchy, weights, tracking, and wrapping remain readable.
-- Spacing and layout rhythm: passed. The 250 px sidebar, 80 px top bar, larger page gutters, 20–28 px card radii, and consistent internal padding reproduce the source rhythm without moving Salus sections.
-- Colors and visual tokens: passed. Sage canvas, white surfaces, near-black controls, mint privacy/status accents, and purple assistant accents form a coherent translation of the reference.
-- Image quality and asset fidelity: passed. Neither compared screen depends on photographic or illustrative assets; all visible interface icons use the installed icon library.
-- Copy and content: passed. Salus healthcare and Protegrity language was preserved rather than copying ACL branding or product claims.
-- Responsiveness and accessibility: passed. The mobile breakpoint has no horizontal document overflow, retains the bottom navigation, and includes a reduced-motion override. Focus-visible treatment remains present.
+- Source visual truth: `C:\Users\shobh\.codex\generated_images\019fc30a-f5b5-7390-9aff-da3d21114b2c\exec-b3ad6448-8308-4427-a0b6-6138745107f9.png`
+- Browser-rendered implementation: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-option-3\desktop-final.png`
+- Normalized side-by-side comparison: `C:\Users\shobh\OneDrive\Documents\Salas\.codex-audit\landing-option-3\design-comparison.png`
+- Source pixels: 1488 × 1058
+- Implementation pixels: 1584 × 889
+- Viewport and normalization: desktop Codex in-app browser; each artifact was proportionally contained within an equal 760 × 570 comparison region without stretching.
+- State: signed-out public landing page with the option 3 hero video loaded.
 
 ## Findings
 
-No actionable P0, P1, or P2 mismatch remains. The intentional differences are Salus's retained top bar, patient/purpose context, and healthcare-specific information architecture.
+No actionable P0, P1, or P2 differences remain. The implementation preserves option 3's patient-first narrative, split dark/cinematic hero, violet conversion actions, editorial serif hierarchy, caregiver utility row, and protected-operation evidence panel. The implementation viewport is shorter than the source board, so the panel continues below the captured fold; this is an expected viewport difference rather than hidden or clipped page content.
+
+## Required fidelity surfaces
+
+- Fonts and typography: Instrument Serif carries the two-line editorial headline and panel headings. Sans-serif navigation, descriptions, control labels, and evidence metadata retain the source's compact optical weight and hierarchy.
+- Spacing and layout rhythm: the capsule navigation, left-aligned copy, dual actions, trust markers, right-side cinematic subject, and wide two-column evidence panel follow the source order and alignment. The wider final grid prevents the headline and pipeline labels from wrapping incorrectly.
+- Colors and visual tokens: the near-black-to-blue canvas, violet primary actions, mint protection states, restrained white borders, and translucent glass surfaces match the selected direction.
+- Image quality and asset fidelity: the supplied cinematic person-over-clouds video is used as the real hero asset with a left-side readability gradient and a focal crop that keeps the subject away from the copy. Lucide provides the consistent line-icon family; no placeholder, CSS-drawn, or handcrafted SVG imagery is present.
+- Copy and content: the hero accurately describes patient/caregiver workflows and states that raw identifiers and unprotected sensitive values are protected before storage or AI processing. The evidence panel explicitly states that the AI receives pseudonymized, minimum-necessary clinical context.
+- Responsiveness and accessibility: navigation simplifies, care features reflow, the operation pipeline becomes horizontally scrollable, and cards stack at smaller breakpoints. Links remain semantic and keyboard reachable; headings and lists are labelled; videos are decorative and honor reduced motion.
+
+## Interaction and runtime evidence
+
+- “Create a health profile” was tested and resolves to `/login` for a signed-out visitor.
+- “Explore privacy proof” was tested and resolves to `/#evidence`.
+- Navigation, workspace, caregiver, protection, and evidence links remain functional.
+- Browser console errors checked: none.
 
 ## Comparison history
 
-- Pass 1: the first post-build desktop comparison found no actionable P0/P1/P2 issue. No corrective visual iteration was required.
+1. First option 3 pass: the headline wrapped to three lines, the hero subject sat too close to the copy, and the trust markers collided with the evidence panel. These were P2 hierarchy and spacing issues.
+2. Second pass: the copy width and display scale were corrected to restore the source's two-line headline; the navigation and evidence panel were widened to match the source frame; the hero focal crop was moved right.
+3. Final pass: the evidence panel was moved below the trust markers, preserving the intended hierarchy, while the hero overflow and following section spacing keep the panel fully reachable. The post-fix side-by-side comparison shows no actionable P0/P1/P2 mismatch.
 
-## Primary interactions and console
-
-- Authenticated patient dashboard loaded successfully.
-- Privacy Proof navigation resolved uniquely, opened successfully, and returned to the patient dashboard.
-- Browser console errors: none.
-- Web type-check, web tests, and production build: passed.
-
-## Follow-up polish
-
-- P3: consider adding optional sidebar collapse behavior in a later iteration; it was deliberately excluded because the user requested no layout change.
+Focused-region comparison was not required beyond the full hero comparison because the source and implementation both render the navigation, headline, actions, trust markers, utility icons, pipeline labels, and glass-panel boundaries clearly at the normalized comparison size; each full-resolution image was also inspected independently.
 
 final result: passed

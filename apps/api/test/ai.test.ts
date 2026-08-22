@@ -26,7 +26,7 @@ const source = {
 
 function completion(answer: string) {
   return new Response(JSON.stringify({
-    choices: [{ message: { content: JSON.stringify({ answer, citations: [{ sourceId: source.id, label: source.label }] }) } }]
+    choices: [{ message: { content: JSON.stringify({ answer, citations: [{ sourceId: "source-1", label: source.label }] }) } }]
   }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
@@ -100,7 +100,7 @@ describe("hosted NVIDIA chat fallback", () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({
         answer: "Grounded answer",
-        citations: [{ sourceId: source.id, label: "Model supplied label" }],
+        citations: [{ sourceId: "source-1", label: "Model supplied label" }],
         uncertainty: null,
         proposedEvent: null
       }) } }]
@@ -125,9 +125,25 @@ describe("hosted NVIDIA chat fallback", () => {
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("protects the complete prompt, hides database UUIDs, and inspects the exact provider payload", async () => {
+    fetchMock.mockResolvedValueOnce(completion("Protected answer"));
+    const protectPrompt = vi.fn(async (prompt: string) => prompt.replace("Care note", "Protected source"));
+    let observedSerialized = "";
+    const observePayload = vi.fn(async (payload: { serialized: string }) => { observedSerialized = payload.serialized; });
+
+    const result = await createGroundedReply("What happened?", [source], observePayload, protectPrompt);
+
+    expect(result.citations).toEqual([{ sourceId: source.id, label: source.label }]);
+    expect(protectPrompt).toHaveBeenCalledTimes(1);
+    expect(observePayload).toHaveBeenCalledTimes(1);
+    expect(observedSerialized).toContain("source-1");
+    expect(observedSerialized).toContain("Protected source");
+    expect(observedSerialized).not.toContain(source.id);
+  });
 });
 
-describe("hosted NVIDIA embedding fallback", () => {
+describe("hosted NVIDIA embeddings", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
@@ -137,16 +153,14 @@ describe("hosted NVIDIA embedding fallback", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("uses the OpenAI-compatible NVIDIA endpoint when the dedicated function is unavailable", async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: Array.from({ length: 1024 }, () => 0.25) }] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  it("uses the supported OpenAI-compatible endpoint with explicit safe truncation", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: Array.from({ length: 1024 }, () => 0.25) }] }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
     const vector = await embed("care note", "passage");
 
     expect(vector).toHaveLength(1024);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://integrate.api.nvidia.com/v1/embeddings");
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ model: "nvidia/nv-embedqa-e5-v5", input: ["care note"] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://integrate.api.nvidia.com/v1/embeddings");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ model: "nvidia/nv-embedqa-e5-v5", input: ["care note"], input_type: "passage", truncate: "END" });
   });
 });

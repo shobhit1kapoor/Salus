@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Check, FlaskConical, HeartPulse, LockKeyhole } from "lucide-react";
+import { ArrowRight, Check, HeartPulse, LockKeyhole } from "lucide-react";
 import { api } from "../lib/api";
 
 export function AuthEntry() {
@@ -11,12 +11,7 @@ export function AuthEntry() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [demoEnabled, setDemoEnabled] = useState(false);
   const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
-
-  useEffect(() => {
-    api<{ enabled: boolean }>("/v1/auth/demo-status").then(({ enabled }) => setDemoEnabled(enabled)).catch(() => setDemoEnabled(false));
-  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -61,20 +56,6 @@ export function AuthEntry() {
     }
   }
 
-  async function enterDemo() {
-    setError("");
-    setNotice("");
-    setBusy(true);
-    try {
-      await api("/v1/auth/demo-login", { method: "POST" });
-      router.push("/dashboard");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not open the demo workspace.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return <main className="welcome">
     <section className="auth-panel">
       <div className="auth-card">
@@ -101,11 +82,6 @@ export function AuthEntry() {
           {error && <div className="message error" role="alert">{error}</div>}
           {notice && <div className="message success" role="status">{notice}</div>}
           <button className="primary-button" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Continue to workspace" : "Create protected account"}<ArrowRight size={18} /></button>
-          {mode === "login" && demoEnabled && <>
-            <div className="demo-divider"><span>or</span></div>
-            <button type="button" className="secondary-button demo-button" disabled={busy} onClick={enterDemo}><FlaskConical size={18} />Open synthetic demo</button>
-            <small className="demo-note">Local testing only · Synthetic patient data</small>
-          </>}
         </form>}
 
         <div className="auth-assurance"><LockKeyhole size={16} /><span><strong>Private session</strong><small>Purpose checks and protection controls run before data access.</small></span></div>

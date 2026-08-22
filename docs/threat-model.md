@@ -5,7 +5,7 @@ Salus assumes web clients, uploaded documents, caregiver text, model output, ret
 | Threat | Primary control | Evidence |
 |---|---|---|
 | raw identifier reaches storage | discovery, protection, rescan postcondition, fail closed | receipt stages; boundary canary scan |
-| raw identifier reaches vectors/model | embed only AI-safe view; provider adapter accepts protected context | provider stage and captured-payload scan |
+| raw identifier reaches vectors/model | embed only AI-safe view; protect/rescan complete model prompt; alias database source IDs | provider stage, exact payload hash/size, and patient-bearing content scan |
 | prompt/document injection | healthcare Semantic Guardrails plus deterministic safety controls | guardrail outcome and Attack Lab trace |
 | model/tool output exposes data | PII guardrail, discovery, canary, schema and citation validation | output stages and raw leak count |
 | cross-profile retrieval | purpose grant, scoped capability, RLS | denied authorization receipt |

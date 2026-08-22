@@ -24,7 +24,7 @@ This challenge build uses synthetic data and makes no healthcare-compliance cert
    npx web-push generate-vapid-keys
    ```
 
-4. Keep `DEMO_LOGIN_ENABLED=false`; the production Compose file enforces this along with secure cookies and the exact HTTPS origin.
+4. Keep secure cookies enabled and configure the exact HTTPS web origin. Salus has no passwordless demonstration-login route.
 5. Validate the resolved configuration without starting containers:
 
    ```sh
@@ -41,7 +41,7 @@ docker compose --env-file .env.production -f docker-compose.production.yml ps
 curl --fail https://YOUR_DOMAIN/health/ready
 ```
 
-The readiness response must report `status: ready`, `aiConfigured: true`, and `speechConfigured: true`. Register the first real account through the web UI and verify its email through the configured SMTP provider. Do not seed challenge reviewer credentials into a public deployment.
+The readiness response must report `status: ready`, `aiConfigured: true`, `privacy.mode: protegrity`, and `privacy.protegrityConfigured: true`. Voice questions use Salus's private transcript-review workflow and do not require a hosted speech provider. Register the first real account through the web UI and verify its email through the configured SMTP provider. Do not seed challenge reviewer credentials into a public deployment.
 
 ## Update and rollback
 

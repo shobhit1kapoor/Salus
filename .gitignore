@@ -18,3 +18,4 @@ packages/testing/reports/*
 # Generated submission documents, render previews, and local scratch data
 output/
 tmp/
+videos/

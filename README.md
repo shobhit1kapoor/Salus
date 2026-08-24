@@ -80,6 +80,7 @@ Salus 80 contains 40 care, grounding, clinical-safety, provenance, authorization
 
 ## Judge guide
 
+- [Final submission](docs/final-submission.md)
 - [Architecture](docs/architecture.md)
 - [Judge quickstart](docs/judge-quickstart.md)
 - [Threat model](docs/threat-model.md)
@@ -88,5 +89,6 @@ Salus 80 contains 40 care, grounding, clinical-safety, provenance, authorization
 - [Demo script](docs/demo-script.md)
 - [Security limitations](docs/limitations.md)
 - [Operations](docs/operations.md)
+- [Developer Edition feedback](docs/developer-feedback.md)
 
 Salus uses synthetic data for development and demonstration. It makes no HIPAA, certification, clinical-validation, or production-readiness claim.
